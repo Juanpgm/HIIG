@@ -7,6 +7,8 @@ name = "validacion-jev"
 version = "0.1.0"
 description = "Validacion semantica independiente (JEV) del normalizador y del matcher de direcciones"
 requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+classifiers = ["License :: OSI Approved :: Apache Software License"]
 dependencies = []
 
 [project.optional-dependencies]

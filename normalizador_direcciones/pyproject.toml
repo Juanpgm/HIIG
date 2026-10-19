@@ -8,12 +8,13 @@ dynamic = ["version"]
 description = "Normalize and match addresses from any dataset against the Cali (Colombia) cadastre"
 readme = "README.md"
 requires-python = ">=3.11"  # tomllib (config files) needs 3.11
-# License intentionally not declared yet (the owner has not chosen one).
+license = { text = "Apache-2.0" }
 keywords = ["address", "geocoding", "normalization", "cadastre", "cali", "colombia"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: GIS",
+    "License :: OSI Approved :: Apache Software License",
 ]
 dependencies = [
     # CPU-only wheels: `pip install torch --index-url https://download.pytorch.org/whl/cpu`
