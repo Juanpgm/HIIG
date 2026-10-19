@@ -1,0 +1,174 @@
+{
+  "tool": "build_groundtruth/2",
+  "seed": 20260926,
+  "parquet_rows": 330387,
+  "sizes": {
+    "synthetic": 250,
+    "per_stratum": 60,
+    "sanity": 30
+  },
+  "threshold_for_sidecar_decision": 0.9,
+  "counts": {
+    "synthetic": 250,
+    "synthetic_by_transform": {
+      "complement_alias": 15,
+      "extra_whitespace": 15,
+      "glued_tokens": 15,
+      "hash_absent": 14,
+      "hash_to_no": 15,
+      "lowercase": 14,
+      "novel_complement_alias": 15,
+      "novel_number_word": 15,
+      "novel_type_alias": 14,
+      "punctuation": 15,
+      "trailing_whitespace": 15,
+      "type_alias_long": 15,
+      "type_alias_short": 15,
+      "unicode_spacing": 15,
+      "unicode_symbols": 14,
+      "zero_padded": 14,
+      "combo": 15
+    },
+    "candidates": 360,
+    "candidates_by_stratum": {
+      "complement_one_sided": 60,
+      "cross_type_presence": 60,
+      "plate_letter": 60,
+      "adjacent_or_swap": 60,
+      "same_base_diff_complement": 60,
+      "opaque_or_degenerate": 60
+    },
+    "sanity_negatives": 30
+  },
+  "shortfalls": {
+    "synthetic": {
+      "requested": 250,
+      "produced": 250,
+      "shortfall": 0
+    },
+    "candidates": {
+      "complement_one_sided": {
+        "requested": 60,
+        "produced": 60,
+        "shortfall": 0
+      },
+      "cross_type_presence": {
+        "requested": 60,
+        "produced": 60,
+        "shortfall": 0
+      },
+      "plate_letter": {
+        "requested": 60,
+        "produced": 60,
+        "shortfall": 0
+      },
+      "adjacent_or_swap": {
+        "requested": 60,
+        "produced": 60,
+        "shortfall": 0
+      },
+      "same_base_diff_complement": {
+        "requested": 60,
+        "produced": 60,
+        "shortfall": 0
+      },
+      "opaque_or_degenerate": {
+        "requested": 60,
+        "produced": 60,
+        "shortfall": 0
+      }
+    },
+    "sanity": {
+      "requested": 30,
+      "produced": 30,
+      "shortfall": 0
+    }
+  },
+  "candidate_score_bins_by_stratum": {
+    "complement_one_sided": {
+      "<0.70": 0,
+      "0.70-0.85": 0,
+      "0.85-0.90": 33,
+      "0.90-0.95": 0,
+      ">=0.95": 27
+    },
+    "cross_type_presence": {
+      "<0.70": 0,
+      "0.70-0.85": 0,
+      "0.85-0.90": 0,
+      "0.90-0.95": 0,
+      ">=0.95": 60
+    },
+    "plate_letter": {
+      "<0.70": 60,
+      "0.70-0.85": 0,
+      "0.85-0.90": 0,
+      "0.90-0.95": 0,
+      ">=0.95": 0
+    },
+    "adjacent_or_swap": {
+      "<0.70": 60,
+      "0.70-0.85": 0,
+      "0.85-0.90": 0,
+      "0.90-0.95": 0,
+      ">=0.95": 0
+    },
+    "same_base_diff_complement": {
+      "<0.70": 60,
+      "0.70-0.85": 0,
+      "0.85-0.90": 0,
+      "0.90-0.95": 0,
+      ">=0.95": 0
+    },
+    "opaque_or_degenerate": {
+      "<0.70": 32,
+      "0.70-0.85": 4,
+      "0.85-0.90": 20,
+      "0.90-0.95": 0,
+      ">=0.95": 4
+    }
+  },
+  "synthetic_score_bins": {
+    "<0.70": 63,
+    "0.70-0.85": 0,
+    "0.85-0.90": 0,
+    "0.90-0.95": 0,
+    ">=0.95": 187
+  },
+  "sanity_score_bins": {
+    "<0.70": 30,
+    "0.70-0.85": 0,
+    "0.85-0.90": 0,
+    "0.90-0.95": 0,
+    ">=0.95": 0
+  },
+  "sidecar": {
+    "file": "matcher_scores_sidecar.jsonl",
+    "sha256": "38009595e4dc6d3f1f32c5a73c7be2d07a18b2bada18972778b7b162038a4452"
+  },
+  "transform_rationale": {
+    "type_alias_long": "Street-type abbreviation written as the full word (KR -> CARRERA); same street, digits untouched.",
+    "type_alias_short": "Another abbreviation of the same street type that the parser is expected to know (KR -> CRA, CL -> CLL); same street.",
+    "complement_alias": "Unit word spelled out (AP -> APARTAMENTO, BLQ -> BLOQUE); same unit, numbers untouched.",
+    "zero_padded": "Leading zeros on numbers (26 -> 026); numeric value is identical.",
+    "glued_tokens": "Spaces removed around type/number, '#' and '-' (CL5#10-20); same tokens, no digit changed.",
+    "lowercase": "Letter case only (lower or Title Case); case never carries meaning in an address.",
+    "extra_whitespace": "Repeated blanks between tokens; whitespace is not information.",
+    "hash_to_no": "'#' written as No / No. / N° / Nº; all mean 'number'.",
+    "hash_absent": "'#' omitted ('CL 5 10 - 20'), only for single-number streets so the split stays unambiguous; tokens and order unchanged.",
+    "punctuation": "Stray '.' or ',' after the street type or at the end; punctuation only.",
+    "unicode_spacing": "Non-breaking spaces or en/em dash instead of '-' (typical of copy/paste from documents).",
+    "unicode_symbols": "Full-width '#' or the numero sign; compatibility characters for the same '#'/'No'.",
+    "trailing_whitespace": "Leading or trailing blanks/tabs; whitespace is not information.",
+    "novel_type_alias": "Street-type spellings NOT in the parser tables (KR -> CARR/CRRA, AV -> AVDA/AVEN, DG -> DIAG); same street, digits untouched.",
+    "novel_complement_alias": "Unit-word spellings NOT in the parser tables (AP -> APT/APART, LC -> LOC, OF -> OFIC, ED -> EDIF/EDF, BLQ -> BLOQ); same unit, numbers untouched.",
+    "novel_number_word": "'#' written as the word NUMERO; same meaning, not in the parser tables.",
+    "combo": "One structural mutation followed by one or two surface mutations; each preserves identity, so the composition does too."
+  },
+  "sha256": {
+    "synthetic_positives.jsonl": "f68faacb98534a7df693bacd42ce0d6f86ee928bf361e45de1c8ab811bab3910",
+    "candidates_to_label.jsonl": "ab0e17c0b1e48fd07c9c8064ee0e7d4470105a3dd852c0318a310f204b3021e2",
+    "random_negatives.jsonl": "79d6cbd24e29ba52879b8dd82ab7c9cc572e99a51b43046c8ac39a527d567c22",
+    "label_sheet.csv": "e143d12bd20e79b41a340998cc551d7d75a3068448ccecd3359c11ccf33a3972"
+  }
+}

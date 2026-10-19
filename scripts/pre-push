@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Local pre-push hook template for the HIIG monorepo.
+#
+# Install (from the repository root):
+#   cp scripts/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+#
+# 1. Always runs the path/size/secret guard (the same one CI runs).
+# 2. Runs the real-address scan when private data is available. CI cannot do
+#    this because the private evaluation data never leaves a developer machine.
+#    Set HIIG_PRIVATE_DATA_ROOT to the directory that holds that data (the
+#    folder that contains the private inputs, see the README). Set
+#    HIIG_REQUIRE_ADDRESS_SCAN=1 to make a missing scan a hard failure.
+#
+# Bypass is possible with `git push --no-verify`; do not do that for a public
+# repository.
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+py="${PYTHON:-python}"
+
+echo "[pre-push] publish guard"
+"$py" scripts/check_publishable.py
+
+scanner="normalizador_direcciones/scripts/check_no_real_addresses.py"
+data_root="${HIIG_PRIVATE_DATA_ROOT:-}"
+if [[ -z "$data_root" || ! -d "$data_root" ]]; then
+  echo "[pre-push] real-address scan SKIPPED: set HIIG_PRIVATE_DATA_ROOT to run it" >&2
+  [[ "${HIIG_REQUIRE_ADDRESS_SCAN:-0}" == "1" ]] && exit 1
+  exit 0
+fi
+
+status=0
+for sub in normalizador_direcciones emparejador_direcciones validacion_jev; do
+  echo "[pre-push] real-address scan: $sub"
+  rc=0
+  "$py" "$scanner" --root "$sub" --data-root "$data_root" || rc=$?
+  if [[ $rc -eq 1 ]]; then status=1; fi
+  if [[ $rc -eq 2 ]]; then
+    echo "[pre-push] no private data found for $sub: nothing checked" >&2
+    [[ "${HIIG_REQUIRE_ADDRESS_SCAN:-0}" == "1" ]] && status=1
+  fi
+done
+exit $status

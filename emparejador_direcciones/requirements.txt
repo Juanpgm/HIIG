@@ -1,0 +1,3 @@
+# Runtime code has zero third-party dependencies (stdlib only: re, unicodedata, dataclasses).
+# pytest is a test-time dependency only.
+pytest==9.0.3

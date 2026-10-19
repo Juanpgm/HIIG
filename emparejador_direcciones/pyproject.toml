@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "emparejador-direcciones"
+dynamic = ["version"]
+description = "Deterministic pairwise matcher for already-normalized Colombian urban addresses"
+readme = "README.md"
+requires-python = ">=3.12"
+# License intentionally not declared yet (the owner has not chosen one).
+# Runtime code uses only the standard library (re, unicodedata, dataclasses).
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=9"]
+eval = ["pyarrow>=25"]  # evaluation harness under tools/ only
+
+[tool.setuptools.dynamic]
+version = { attr = "emparejador.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["emparejador*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

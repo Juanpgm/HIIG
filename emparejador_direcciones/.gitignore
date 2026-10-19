@@ -1,0 +1,40 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.atl/
+*.parquet
+# Real cadastre addresses/NPNs: regenerate with tools/build_groundtruth.py
+data/groundtruth/*
+!data/groundtruth/MANIFEST.json
+data/groundtruth_private/
+data/**/*_labeled*.csv
+result*.json
+r.json
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Real-world evaluation outputs contain real addresses: never commit
+data/realworld_private/
+
+# Run results, caches and secrets (see scripts/check_publishable.py at the repository root).
+*.egg-info/
+build/
+dist/
+.coverage
+.coverage.*
+.ruff_cache/
+*.log
+*.pkl
+*.ipynb
+.env*
+!.env.example
+*.pem
+*.key
+runs/
+outputs/
+candidatos/
+salida_jev*/
+data/groundtruth/candidates_to_label.jsonl
+data/groundtruth/label_sheet.csv

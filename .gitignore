@@ -1,0 +1,96 @@
+# Publication hygiene. scripts/check_publishable.py enforces these rules in CI
+# and in the pre-push hook; this file only keeps accidents out of `git add`.
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Secrets and local configuration ---
+.env
+.env.*
+!.env.example
+*.env
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials*.json
+service-account*.json
+
+# --- Local tooling and editors ---
+.atl/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Notebooks and logs ---
+*.ipynb
+.ipynb_checkpoints/
+notebooks/
+*.log
+logs/
+
+# --- Private inputs, run results and scratch (never published) ---
+context/
+outputs/
+runs/
+experiments/
+candidatos/
+salida_jev*/
+**/salida_jev*/
+repo_audit/
+scratch/
+backup/
+deploy/artifacts/
+**/artifacts/experiments/
+**/artifacts/splits/
+**/strict_eval_*
+**/eval_*.csv
+**/eval_*.parquet
+**/*leaderboard*
+**/idesc_*
+**/*predictions*
+**/train_data*
+**/catastro_emb.pt
+
+# --- Lazily built caches (regenerated on first use; never commit) ---
+*.pkl
+*.joblib
+interp_index_v1.*
+catalog_keys_v1.*
+
+# --- Data: ignored by default, explicit allow-list below ---
+*.parquet
+*.npz
+*.npy
+*.jsonl
+*.xlsx
+*.xls
+*.geojson
+*.csv
+*.pt
+emparejador_direcciones/data/*
+
+# --- Allow-list: model, its small configuration, public cadastre and basemaps ---
+!normalizador_direcciones/artifacts/model.pt
+!normalizador_direcciones/artifacts/catastro_docs.parquet
+!normalizador_direcciones/artifacts/catastro_own_centroids.parquet
+!normalizador_direcciones/basemaps/*.geojson
+!emparejador_direcciones/data/MANIFEST.json

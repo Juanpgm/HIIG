@@ -1,0 +1,8 @@
+{
+  "source": "capa catastral municipal (ArcGIS FeatureServer); URL configurable mediante la variable de entorno CALI_CATASTRO_URL",
+  "total_reported": 338311,
+  "rows_downloaded": 338311,
+  "downloaded_at": "2026-09-24 16:24:21",
+  "outSR": 4326,
+  "geometryPrecision": 6
+}
