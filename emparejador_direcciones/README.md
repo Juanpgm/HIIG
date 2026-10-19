@@ -96,10 +96,10 @@ documentacion/     esta documentación (en español)
 
 ## Licencias y datos de terceros
 
-- **Licencia del código.** El repositorio todavía no incluye un archivo `LICENSE`: la licencia está pendiente de decisión del titular. Hasta que exista, no se concede ningún permiso de uso o redistribución más allá de los que otorgue la plataforma de alojamiento.
+- **Licencia del código.** El código, las pruebas y la documentación se distribuyen bajo la licencia [Apache-2.0](../LICENSE) (ver también [NOTICE](../NOTICE)). La licencia no cubre datos de terceros.
 - **Datos de terceros que no se redistribuyen.** La capa catastral de Cali, con la que se evaluó el modelo, y los mapas base municipales son datos de terceros y **no forman parte de este repositorio**; aquí solo se publican cifras agregadas, ejemplos sintéticos y un manifiesto (`data/MANIFEST.json`). Cada usuario debe verificar los términos de uso y de redistribución de las fuentes que emplee.
 - **Sin pesos entrenados.** Este modelo es un algoritmo determinista y no incluye pesos ni archivos derivados de datos de terceros.
 
 ## Licencia
 
-Licencia: por definir (ver LICENSE en la raíz cuando exista).
+Apache License 2.0. Ver [LICENSE](../LICENSE) y [NOTICE](../NOTICE) en la raíz del repositorio.

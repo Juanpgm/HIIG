@@ -1,0 +1,24 @@
+HIIG - Herramientas de Inferencia e Integración Geográfica
+Copyright 2026 Juanpgm
+
+Este repositorio se distribuye bajo la Apache License, Version 2.0 (ver el
+archivo LICENSE).
+
+Alcance de la licencia
+
+  - La licencia Apache-2.0 cubre el código fuente, las pruebas y la
+    documentación de este repositorio.
+
+  - No cubre datos de terceros. Este repositorio no incluye el catastro ni los
+    mapas base municipales; cada usuario debe verificar los términos de uso y
+    de redistribución de las fuentes que emplee.
+
+  - El archivo normalizador_direcciones/artifacts/model.pt contiene los pesos
+    de un modelo entrenado con consultas sintéticas derivadas de un catastro de
+    terceros. Se distribuye sin garantía, y su uso y redistribución pueden
+    depender de los términos de esa fuente, que el titular no ha determinado.
+    La licencia Apache-2.0 no concede derechos sobre datos de terceros.
+
+  - Los datos que el usuario aporte conservan sus propias condiciones de uso.
+
+Este aviso no es asesoría legal.

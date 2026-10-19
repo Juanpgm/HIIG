@@ -33,7 +33,7 @@ Este documento enumera lo que puede salir mal, los elementos específicos de Cal
 16. **Los scripts de línea de comandos no exponen el nivel** ni consultas por lotes; `vincular.py` reconstruye el índice en cada ejecución y usa el código de salida 1 tanto para "sin coincidencia" como para "consulta ilegible".
 17. **Las salidas de las herramientas de evaluación pueden contener direcciones reales** (hasta 5 ejemplos por categoría) y números prediales. Anonimice antes de publicar ([04](04-evaluacion-y-calibracion.md)).
 18. **Concurrencia no probada.** La lectura del código indica que `find` no modifica el índice, pero no hay una prueba de concurrencia.
-19. **Versión preliminar.** El proyecto no tiene licencia, integración continua ni empaquetado; la suite de pruebas original no se incluye en esta publicación.
+19. **Versión preliminar.** El proyecto se publica bajo Apache-2.0 (ver `LICENSE` en la raíz). La integración continua del repositorio solo ejecuta la guarda de publicación; las pruebas se ejecutan localmente con `pytest`.
 
 ## 2. Elementos específicos de Cali y de Colombia
 
@@ -82,7 +82,7 @@ No hay lista de barrios, comunas ni nombres de ciudades en `src/` ni en `scripts
 
 | Carencia | Detalle |
 |---|---|
-| Sin licencia | No hay archivo `LICENSE`. Licencia: por definir (ver LICENSE en la raíz cuando exista) |
+| Licencia | Apache-2.0 (ver `LICENSE` y `NOTICE` en la raíz). Los datos de terceros no están cubiertos |
 | Sin integración continua | No hay flujo de CI |
 | Sin `pyproject.toml` | Los scripts modifican `sys.path`; no hay paquete instalable ni versión de Python declarada de forma que la haga cumplir |
 | Pruebas no incluidas | La suite original (717 pruebas aprobadas según el informe; archivos `tests/`) se excluyó de esta publicación |

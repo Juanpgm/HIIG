@@ -249,3 +249,13 @@ La convergencia entre la normatividad expedida por el IGAC y la madurez de infra
 [^40]: Fuente 40 de la lista [Fuentes citadas](#fuentes-citadas): Geocodificador - Alcaldía de Santiago de Cali.
 [^41]: Fuente 41 de la lista [Fuentes citadas](#fuentes-citadas): Geocodificador - Alcaldía de Santiago de Cali.
 [^42]: Fuente 42 de la lista [Fuentes citadas](#fuentes-citadas): Instructivo Control de Calidad de la Información Cartográfica.
+
+## Licencia
+
+El código, las pruebas y la documentación de este repositorio se distribuyen bajo la licencia **Apache-2.0** (ver [LICENSE](LICENSE)). Es una licencia libre y de código abierto, que permite usar, modificar y redistribuir el software, incluso con fines comerciales, conservando los avisos de autoría y de licencia.
+
+**Salvedades** (detalladas en [NOTICE](NOTICE)):
+
+- La licencia **no cubre datos de terceros**. Este repositorio no incluye el catastro ni los mapas base municipales, y cada usuario debe verificar los términos de las fuentes que emplee.
+- Los pesos entrenados `normalizador_direcciones/artifacts/model.pt` derivan de consultas sintéticas construidas sobre un catastro de terceros; su uso y redistribución pueden depender de los términos de esa fuente, que no han sido determinados.
+- Los datos que cada usuario aporte conservan sus propias condiciones de uso.

@@ -43,4 +43,4 @@ Se conservan en [../docs/](../docs): `API.md` (contrato de la API), `ESRI_INTEGR
 - Los resultados de las corridas (cifras de rendimiento e intervalos de confianza) no se publican; la documentación describe cómo obtenerlos localmente.
 - Las recomendaciones se rotulan como tales y se distinguen de los hechos verificados.
 
-Licencia: por definir (ver LICENSE en la raíz cuando exista).
+Licencia: Apache-2.0 (ver LICENSE y NOTICE en la raíz del repositorio).

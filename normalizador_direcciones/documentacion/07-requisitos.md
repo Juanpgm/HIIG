@@ -129,7 +129,7 @@ El repositorio **no publica**:
 
 Consecuencia práctica: **la predicción exige que el usuario construya el índice con su propio catastro** (pasos en [05](05-uso-e-implementacion.md), sección 1). Con `model.pt` más un catastro de Cali propio basta; con el catastro de otra ciudad, `model.pt` no es adecuado (sección 7 y [10](10-estandar-y-generalizacion.md)).
 
-Licencia: por definir (ver `LICENSE` en la raíz cuando exista). Los datos que el usuario aporte conservan sus propias condiciones de uso.
+Licencia: Apache-2.0 para el código y la documentación (ver `LICENSE` y `NOTICE` en la raíz; los datos de terceros y los pesos `model.pt` tienen las salvedades del `NOTICE`). Los datos que el usuario aporte conservan sus propias condiciones de uso.
 
 ## 6. Acceso a red
 

@@ -205,7 +205,7 @@ Las pruebas usan modelos de juguete y direcciones **sintéticas**. Las marcadas 
 
 ## Licencias y datos de terceros
 
-- **Licencia del código.** El repositorio todavía no incluye un archivo `LICENSE`: la licencia está pendiente de decisión del titular. Hasta que exista, no se concede ningún permiso de uso o redistribución más allá de los que otorgue la plataforma de alojamiento.
+- **Licencia del código.** El código, las pruebas y la documentación se distribuyen bajo la licencia [Apache-2.0](../LICENSE) (ver también [NOTICE](../NOTICE)). La licencia no cubre datos de terceros ni, necesariamente, los pesos entrenados `artifacts/model.pt` (ver el punto siguiente y el `NOTICE`).
 - **Datos de terceros que no se redistribuyen.** La capa catastral de Cali y los mapas base municipales (barrios, veredas, comunas y corregimientos) son datos de terceros y **no forman parte de este repositorio**. Cada usuario debe verificar los términos de uso y de redistribución de las fuentes que emplee antes de descargarlas, derivar productos de ellas o publicarlas.
 - **Pesos entrenados.** `artifacts/model.pt` se entrenó con ruido sintético derivado de un catastro (no contiene filas del catastro). Aun así, su uso y redistribución dependen de los términos de la fuente catastral de la que deriva.
 - **Cómo obtener los archivos que no se publican.** Genérelos localmente; el `.gitignore` ya los excluye (`*.parquet`, `*.pt` salvo `model.pt`, `*.geojson`, `basemaps/`) y no deben incorporarse al repositorio con `git add -f`:
@@ -222,4 +222,4 @@ Las pruebas usan modelos de juguete y direcciones **sintéticas**. Las marcadas 
 
 ## Licencia
 
-Licencia: por definir (ver LICENSE en la raíz cuando exista).
+Apache License 2.0 para el código y la documentación. Ver [LICENSE](../LICENSE) y [NOTICE](../NOTICE) en la raíz del repositorio: el `NOTICE` precisa que los datos de terceros y los pesos `model.pt` tienen condiciones propias.
