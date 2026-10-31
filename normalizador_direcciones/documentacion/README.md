@@ -14,6 +14,9 @@
 | Reentrenar el modelo | [04-entrenamiento.md](04-entrenamiento.md) y [07-requisitos.md](07-requisitos.md) |
 | Configurar la CLI, la API o el despliegue | [03-configuracion.md](03-configuracion.md) |
 | Adaptarlo a otra ciudad o país | [10-estandar-y-generalizacion.md](10-estandar-y-generalizacion.md) |
+| Entrenar para otra ciudad con un flujo ejecutable | [11-entrenar-para-cualquier-ciudad.md](11-entrenar-para-cualquier-ciudad.md) |
+| Elegir y leer métricas y validaciones | [12-guia-metricas-y-validacion.md](12-guia-metricas-y-validacion.md), [13-mecanismos-de-validacion.md](13-mecanismos-de-validacion.md) |
+| Conocer el veredicto del reentrenamiento 2026-10 | [14-reentrenamiento-2026-10.md](14-reentrenamiento-2026-10.md) |
 
 ## Índice
 
@@ -29,6 +32,10 @@
 | 08 | [Métricas y confiabilidad](08-metricas-y-confiabilidad.md) | Definición de métricas, protocolo, cómo reproducirlas, escala operativa, lo no medido |
 | 09 | [Advertencias y limitaciones](09-advertencias-y-limitaciones.md) | 23 advertencias numeradas, inventario de elementos específicos de Cali con archivo y línea, inconsistencias de la documentación original |
 | 10 | [Estándar y generalización](10-estandar-y-generalizacion.md) | Tabla de conformidad con el estándar nacional, lista de adaptación a otros territorios, protocolo de validación, reutilización de `model.pt` |
+| 11 | [Entrenar para cualquier ciudad](11-entrenar-para-cualquier-ciudad.md) | Contrato de datos, adaptador genérico con mapeo de columnas, flujo ejecutable y ciudad sintética de extremo a extremo (parte de las herramientas del proyecto de origen no está publicada en este espejo; ver la nota al inicio del documento) |
+| 12 | [Guía de métricas y validación](12-guia-metricas-y-validacion.md) | Qué pregunta responde cada métrica, intervalos de confianza y métodos de validación, con gráficos |
+| 13 | [Mecanismos de validación](13-mecanismos-de-validacion.md) | Matemática y lógica de cada mecanismo de validación, criterios de aceptación y cómo leerlos |
+| 14 | [Reentrenamiento 2026-10](14-reentrenamiento-2026-10.md) | Especificación técnica y veredicto de confiabilidad del candidato (NO APRUEBA, no promovido) |
 
 Anexo: [Registro de cambios de confiabilidad](CHANGELOG_confiabilidad.md) (procedencia del calibrador servido, causa de su baja discriminación y calibrador v5).
 
