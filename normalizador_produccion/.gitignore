@@ -1,0 +1,8 @@
+# Never commit the index bundle, basemaps, packaged bundles or local env files.
+indice/
+basemaps/
+*.tar.gz
+*.zip
+.env
+__pycache__/
+.pytest_cache/

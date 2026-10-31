@@ -1,0 +1,32 @@
+# Local / single-VM deployment. The index bundle is mounted read-only from ./indice
+# (build it with scripts/preparar_indice.py); the IDESC basemaps are optional.
+services:
+  normalizador:
+    build:
+      context: .
+    image: normalizador-direcciones:0.2.0-candidato
+    ports:
+      - "${HOST_PORT:-8000}:8000"
+    environment:
+      NORMALIZER_BACKEND: ${NORMALIZER_BACKEND:-onnx}
+      NORMALIZER_ONNX_THREADS: ${NORMALIZER_ONNX_THREADS:-auto}
+      NORMALIZER_ONNX_INDEX: ${NORMALIZER_ONNX_INDEX:-fp32}
+      MAX_ROWS: ${MAX_ROWS:-20000}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-25}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - ${INDEX_HOST_DIR:-./indice}:/data/indice:ro
+      - ${BASEMAPS_HOST_DIR:-./basemaps}:/data/basemaps:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 4g
+    restart: unless-stopped

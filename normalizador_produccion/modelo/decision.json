@@ -1,0 +1,39 @@
+{
+ "version": "decision-calib-v1-cand-20261031",
+ "reliability_version": "reliability-calib-v1-cand-20261031",
+ "tau_p": 0.94,
+ "tau_m": 0.7,
+ "floor": 0.7,
+ "confianza_floor": 0.7,
+ "bands": {
+  "alta": 0.97,
+  "media": 0.94
+ },
+ "precision_targets": {
+  "lot": 0.99,
+  "manzana": 0.99
+ },
+ "neutral": {
+  "soft_rules": [
+   "bis_cruce",
+   "bis_via",
+   "cuadrante_compl",
+   "letra_cruce_cardinal",
+   "letra_via"
+  ],
+  "max_soft": 99,
+  "gate_fallback": true,
+  "ambiguity_delta": 0.0,
+  "threshold": "confianza_floor"
+ },
+ "fit_provenance": {
+  "rows": "artifacts/splits/train_pairs.parquet (real gold pairs, never used for training)",
+  "n_predio": 5087,
+  "positives_predio": 4882,
+  "n_manzana": 5014,
+  "positives_manzana": 4954,
+  "artifacts_dir": "artifacts/experiments/v2e_cert_pcer_s42_r3",
+  "mode": "decision-neutral normalize_strict (calibrated mode)",
+  "cv": "5-fold GroupKFold by address_key"
+ }
+}
