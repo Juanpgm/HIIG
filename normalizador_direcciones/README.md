@@ -5,6 +5,8 @@ Sistema que convierte direcciones escritas como texto libre (`Cl. 5 # 34-12`, `C
 Un codificador Transformer a nivel de carácter (3 375 601 parámetros) recupera candidatos entre las direcciones del catastro; luego reglas estructurales y geográficas deciden si se acepta alguno. Cuando no hay una coincidencia aceptable, el sistema se abstiene en lugar de adivinar.
 
 > **Estado: versión preliminar probada con datos de Cali.** No se ha medido fuera de Cali ni con fuentes distintas de las de la evaluación original. Lea [Advertencias de confiabilidad](#advertencias-de-confiabilidad) antes de usar los resultados.
+>
+> **Reentrenamiento 2026-10: no promovido.** El candidato con índice desde nomenclatura oficial obtuvo el veredicto programático **NO APRUEBA** (6 de 12 criterios). Los artefactos publicados no cambian. La promoción a producción está pendiente de la aprobación explícita del responsable del proyecto. Detalle y veredicto en [documentacion/14-reentrenamiento-2026-10.md](documentacion/14-reentrenamiento-2026-10.md). El servicio en producción conserva el modelo anterior; la carpeta [../normalizador_produccion/](../normalizador_produccion/README.md) contiene la imagen candidata (staging), pendiente de aprobación del titular y no apta para producción hasta entonces.
 
 ## Contenido
 
@@ -129,6 +131,7 @@ Resumen; la definición de las métricas, el protocolo y los comandos para repro
 - **Las métricas de una corrida dependen de la versión del código**; una auditoría posterior cambió reglas de decisión, así que mida de nuevo con el código vigente.
 - **Las bandas de confiabilidad no están validadas** y los radios de posición son geométricos (derivados del catastro), no una medida de acierto.
 - **No hay medición fuera de Cali**, en zona rural, ni con otras fuentes de texto.
+- **Confiabilidad alta en oro no equivale a confiabilidad en filas ruidosas.** En el reentrenamiento 2026-10, la calibración tiene un ECE fuera de muestra muy bajo sobre pares de referencia, pero la precisión de lote de la banda alta en dev completo es de 0.67 ([documentacion/14-reentrenamiento-2026-10.md](documentacion/14-reentrenamiento-2026-10.md), sección 10.5).
 - **No use el resultado sin verificación humana en decisiones jurídicas, catastrales o tributarias.**
 - Escala operativa sugerida (aceptable con muestreo, revisión humana, rechazo): [documentacion/08-metricas-y-confiabilidad.md](documentacion/08-metricas-y-confiabilidad.md), sección 5.
 
@@ -178,6 +181,10 @@ Toda la documentación nueva está en [documentacion/](documentacion/README.md),
 | [08-metricas-y-confiabilidad.md](documentacion/08-metricas-y-confiabilidad.md) | Definición de métricas, protocolo, cómo reproducirlas y escala operativa |
 | [09-advertencias-y-limitaciones.md](documentacion/09-advertencias-y-limitaciones.md) | Advertencias numeradas, elementos específicos de Cali e inconsistencias |
 | [10-estandar-y-generalizacion.md](documentacion/10-estandar-y-generalizacion.md) | Conformidad con el estándar nacional y cómo adaptar a otros territorios |
+| [11-entrenar-para-cualquier-ciudad.md](documentacion/11-entrenar-para-cualquier-ciudad.md) | Cómo entrenar el normalizador con el catastro de otra ciudad |
+| [12-guia-metricas-y-validacion.md](documentacion/12-guia-metricas-y-validacion.md) | Guía de métricas y de validación de un reentrenamiento |
+| [13-mecanismos-de-validacion.md](documentacion/13-mecanismos-de-validacion.md) | Mecanismos de validación: criterios, compuertas y auditorías |
+| [14-reentrenamiento-2026-10.md](documentacion/14-reentrenamiento-2026-10.md) | Reentrenamiento 2026-10: especificación técnica, veredicto NO APRUEBA y decisiones abiertas |
 
 ## Pruebas
 

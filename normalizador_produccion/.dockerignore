@@ -1,0 +1,13 @@
+# Only src/, modelo/ (serving graphs + config), requirements.txt, LICENSE and NOTICE enter the image.
+*
+!src/
+!modelo/
+!docs/
+!requirements.txt
+!LICENSE
+!NOTICE
+# The document-side graph is used only by scripts/preparar_indice.py, never at serving time.
+modelo/model.doc.onnx
+modelo/model.doc.meta.json
+**/__pycache__
+**/*.pyc

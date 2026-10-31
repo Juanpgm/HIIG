@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "HIIG"
+abstract: "HIIG (Herramientas de Inferencia e Integración Geográfica): address normalization and geographic matching tools for Santiago de Cali."
+type: software
+authors:
+  - alias: "Juanpgm"
+    website: "https://github.com/Juanpgm"
+license: Apache-2.0
+repository-code: "https://github.com/Juanpgm/HIIG"
+url: "https://github.com/Juanpgm/HIIG"
+version: 0.2.0
+date-released: "2026-10-31"
+keywords:
+  - address normalization
+  - geocoding
+  - Cali
+  - Colombia

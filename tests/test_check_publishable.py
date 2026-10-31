@@ -292,8 +292,30 @@ class GitStates(RepoCase):
         _git(self.root, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "x")
         self.assertEqual(self.rules(), {"BLOCKED_DIR"})
 
-    def test_untracked_ignored_file_is_not_checked(self) -> None:
+    def test_gitignored_file_is_not_checked(self) -> None:
+        self.put(".gitignore", "a/.env\n")
         self.put("a/.env", "X=1\n", stage=False)
+        self.assertEqual(self.report(), [])
+
+    def test_untracked_unignored_file_is_detected(self) -> None:
+        self.put("a/.env", "X=1\n", stage=False)
+        self.assertEqual(self.rules(), {"ENV_FILE"})
+
+    def test_untracked_secret_in_unstaged_file_is_detected(self) -> None:
+        self.put("a/cfg.py", 'token = "Ab3dE6gH9jK2mN5pQ8"\n', stage=False)  # publish-guard: allow
+        self.assertTrue(any(r.startswith("SECRET:") for r in self.rules()))
+
+    def test_tracked_only_flag_ignores_untracked(self) -> None:
+        self.put("a/.env", "X=1\n", stage=False)
+        self.assertEqual(cp.run(self.root, include_untracked=False), [])
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(cp.main(["--root", str(self.root), "--tracked-only"]), 0)
+            self.assertEqual(cp.main(["--root", str(self.root)]), 1)
+
+    def test_only_ignored_untracked_files_pass(self) -> None:
+        self.put(".gitignore", "*.log\nbuild/\n")
+        self.put("x.log", "x\n", stage=False)
+        self.put("build/out.txt", "x\n", stage=False)
         self.assertEqual(self.report(), [])
 
     def test_file_deleted_from_disk_does_not_crash(self) -> None:
@@ -357,7 +379,9 @@ class ResultReportNames(RepoCase):
 
     def test_allowlist_is_exact_path_and_documented(self) -> None:
         allowed = cp.RESULT_REPORT_ALLOWLIST
-        self.assertTrue(all(a.endswith("08-metricas-y-confiabilidad.md") for a in allowed))
+        self.assertTrue(all(a.endswith(("08-metricas-y-confiabilidad.md", "12-guia-metricas-y-validacion.md")) for a in allowed))
+        self.assertEqual(len(allowed), 3)
+        self.assertFalse(any(c in a for a in allowed for c in "*?["))
         for rel in allowed:
             with self.subTest(rel=rel):
                 self.assertNotIn("RESULT_REPORT", cp.check_path(rel))
@@ -387,6 +411,64 @@ class ResultReportNames(RepoCase):
         self.put("docs/resultados.md", b"")
         self.put("docs/benchmark.txt", b"\x00\x01\x02")
         self.assertEqual(self.rules(), {"RESULT_REPORT"})
+
+
+
+class OnnxAndExplicitAllowlist(RepoCase):
+    MODELS = (
+        "normalizador_produccion/modelo/model.onnx",
+        "normalizador_produccion/modelo/model.int8.onnx",
+        "normalizador_produccion/modelo/model.doc.onnx",
+    )
+
+    def test_onnx_is_a_data_extension(self) -> None:
+        self.assertIn(".onnx", cp.DATA_EXTS)
+
+    def test_onnx_not_allowlisted_fails(self) -> None:
+        for rel in ("other/model.onnx", "normalizador_produccion/modelo/other.onnx",
+                    "normalizador_produccion/model.onnx", "model.ONNX"):
+            with self.subTest(rel=rel):
+                self.assertIn("DATA_NOT_ALLOWED", cp.check_path(rel))
+
+    def test_three_candidate_weights_pass(self) -> None:
+        for rel in self.MODELS:
+            self.put(rel, b"\x08\x01\x00")
+        self.assertEqual(self.report(), [])
+
+    def test_onnx_allowlist_entries_are_exact_paths_without_globs(self) -> None:
+        entries = [e for e in cp.DATA_ALLOWLIST if e.endswith(".onnx")]
+        self.assertEqual(sorted(entries), sorted(self.MODELS))
+        for e in entries:
+            self.assertFalse(any(c in e for c in "*?["), e)
+
+    def test_allowlist_does_not_widen_to_siblings_or_nested_paths(self) -> None:
+        for rel in ("normalizador_produccion/modelo/model.int8.v2.onnx",
+                    "normalizador_produccion/modelo/sub/model.onnx",
+                    "normalizador_produccion/modelo/model.onnx.bak.onnx",
+                    "x/normalizador_produccion/modelo/model.onnx"):
+            self.put(rel, b"\x00")
+        self.assertEqual(len([ln for ln in self.report() if "DATA_NOT_ALLOWED" in ln]), 4)
+
+    def test_allowlisted_onnx_is_still_subject_to_size_limit(self) -> None:
+        self.put(self.MODELS[0], size=cp.SIZE_HARD_LIMIT + 1)
+        self.assertEqual(self.rules(), {"SIZE_OVER_90MB"})
+
+    def test_untracked_unlisted_onnx_is_detected(self) -> None:
+        self.put("a/rogue.onnx", b"\x00", stage=False)
+        self.assertEqual(self.rules(), {"DATA_NOT_ALLOWED"})
+
+
+class MetricsGuideAllowlist(RepoCase):
+    DOC = "normalizador_direcciones/documentacion/12-guia-metricas-y-validacion.md"
+
+    def test_guide_is_allowlisted_exactly(self) -> None:
+        self.assertIn(self.DOC, cp.RESULT_REPORT_ALLOWLIST)
+        self.assertNotIn("RESULT_REPORT", cp.check_path(self.DOC))
+
+    def test_allowlist_does_not_cover_other_paths(self) -> None:
+        self.assertIn("RESULT_REPORT", cp.check_path("otro/documentacion/12-guia-metricas-y-validacion.md"))
+        self.assertIn("RESULT_REPORT", cp.check_path("emparejador_direcciones/documentacion/12-guia-metricas-y-validacion.md"))
+        self.assertIn("RESULT_REPORT", cp.check_path("normalizador_direcciones/documentacion/13-resultados-metricas.md"))
 
 
 if __name__ == "__main__":

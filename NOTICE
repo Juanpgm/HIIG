@@ -1,24 +1,62 @@
 HIIG - Herramientas de Inferencia e Integración Geográfica
-Copyright 2026 Juanpgm
+Copyright 2026 Juanpgm (https://github.com/Juanpgm)
+
+Autoría
+  Creador y titular de los derechos de autor: Juanpgm (GitHub: Juanpgm).
+  Repositorio: https://github.com/Juanpgm/HIIG
 
 Este repositorio se distribuye bajo la Apache License, Version 2.0 (ver el
-archivo LICENSE).
+archivo LICENSE). Conforme a la sección 4(d) de esa licencia, quien
+redistribuya este trabajo, o obras derivadas, debe conservar el contenido de
+este archivo NOTICE (o reproducirlo en un archivo NOTICE, en la documentación
+o en una pantalla visible de la obra derivada), de modo que se mantenga el
+crédito a la autoría original.
 
 Alcance de la licencia
 
   - La licencia Apache-2.0 cubre el código fuente, las pruebas y la
     documentación de este repositorio.
 
-  - No cubre datos de terceros. Este repositorio no incluye el catastro ni los
-    mapas base municipales; cada usuario debe verificar los términos de uso y
-    de redistribución de las fuentes que emplee.
+  - No cubre datos de terceros. Este repositorio no incluye el catastro, la
+    nomenclatura ni los mapas base municipales; cada usuario debe verificar
+    los términos de uso y de redistribución de las fuentes que emplee.
 
-  - El archivo normalizador_direcciones/artifacts/model.pt contiene los pesos
-    de un modelo entrenado con consultas sintéticas derivadas de un catastro de
-    terceros. Se distribuye sin garantía, y su uso y redistribución pueden
-    depender de los términos de esa fuente, que el titular no ha determinado.
-    La licencia Apache-2.0 no concede derechos sobre datos de terceros.
+  - Los conjuntos de datos y de entrenamiento (pares de entrenamiento,
+    particiones de desarrollo y validación, direcciones sin etiquetar, tablas
+    por registro) no se distribuyen en este repositorio.
+
+Fuentes de datos empleadas por el sistema (no incluidas)
+
+  - Nomenclatura vial y domiciliaria de la Planeación Municipal de Santiago de
+    Cali, consultada mediante el servicio WFS de la IDESC (Infraestructura de
+    Datos Espaciales de Santiago de Cali). Es la fuente principal de
+    referencia.
+
+  - Catastro: se usa únicamente como respaldo opcional y reversible
+    (fallback); puede desactivarse sin alterar la fuente principal. Sus
+    términos de uso son los de su titular.
+
+Pesos del modelo
+
+  - Los archivos de pesos del modelo bajo normalizador_direcciones/artifacts/
+    (por ejemplo model.pt, sin cambios) provienen de entrenamientos con
+    consultas sintéticas derivadas de datos de terceros (catastro y
+    nomenclatura municipal). Se distribuyen sin garantía, y su uso y
+    redistribución pueden depender de los términos de esas fuentes, que el
+    titular no ha determinado. La licencia Apache-2.0 no concede derechos
+    sobre datos de terceros.
+
+  - Los pesos candidatos en normalizador_produccion/modelo/ (model.onnx,
+    model.int8.onnx y model.doc.onnx) se entrenaron con consultas sintéticas
+    derivadas del índice de nomenclatura oficial, más un respaldo opcional y
+    reversible de catastro. Son pesos candidatos: NO APRUEBA su uso en
+    producción y no están aprobados para ese fin. Se distribuyen sin garantía
+    de ningún tipo; la procedencia de los datos de terceros de los que derivan
+    no está determinada, y su uso y redistribución pueden depender de los
+    términos de esas fuentes.
 
   - Los datos que el usuario aporte conservan sus propias condiciones de uso.
+
+Cómo atribuir: ver COMO_CITAR_Y_ATRIBUIR.md y CITATION.cff.
 
 Este aviso no es asesoría legal.

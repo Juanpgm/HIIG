@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Publish guard: fail when a tracked or staged file must not be published.
 
-Stdlib only. Checks every file that git tracks (``git ls-files``) plus every
-file staged for the next commit, and reports violations as
+Stdlib only. Checks every file that git tracks (``git ls-files``), every file
+staged for the next commit and every untracked file that is not git-ignored
+(``git ls-files --others --exclude-standard``; disable with ``--tracked-only``),
+so it cannot report OK on a tree with unstaged new files. It reports violations as
 ``path[:line]: RULE`` lines. It never prints file contents or secret values.
 
 Rules
@@ -64,7 +66,7 @@ BLOCKED_PATH_FRAGMENTS = ("deploy/artifacts",)
 DATA_EXTS = {
     ".parquet", ".csv", ".tsv", ".json", ".jsonl", ".ndjson", ".xlsx", ".xls",
     ".pt", ".pth", ".pkl", ".pickle", ".npz", ".npy", ".feather", ".h5",
-    ".sqlite", ".db", ".geojson", ".gpkg", ".shp", ".zip",
+    ".sqlite", ".db", ".geojson", ".gpkg", ".shp", ".zip", ".onnx",
 }
 
 # Exact (posix) path patterns, matched with fnmatch against the repo-relative
@@ -79,6 +81,16 @@ DATA_ALLOWLIST = (
     "normalizador_direcciones/artifacts/catastro_own_centroids.parquet",
     "normalizador_direcciones/basemaps/*.geojson",
     "emparejador_direcciones/data/MANIFEST.json",
+    # Production image: ONNX metadata and decision/tuning parameters (aggregates only, no rows).
+    "normalizador_produccion/modelo/onnx_meta.json",
+    "normalizador_produccion/modelo/model.doc.meta.json",
+    "normalizador_produccion/modelo/tuning.json",
+    "normalizador_produccion/modelo/decision.json",
+    "normalizador_produccion/modelo/reliability_calibrated.json",
+    # Candidate ONNX weights (NOT approved for production use, see NOTICE). Exact paths, no globs.
+    "normalizador_produccion/modelo/model.onnx",
+    "normalizador_produccion/modelo/model.int8.onnx",
+    "normalizador_produccion/modelo/model.doc.onnx",
 )
 
 # Text/markup documents are checked by NAME for results-report look-alikes.
@@ -91,6 +103,7 @@ RESULT_REPORT_NAME = re.compile(
 RESULT_REPORT_ALLOWLIST = (
     "emparejador_direcciones/documentacion/08-metricas-y-confiabilidad.md",
     "normalizador_direcciones/documentacion/08-metricas-y-confiabilidad.md",
+    "normalizador_direcciones/documentacion/12-guia-metricas-y-validacion.md",
 )
 
 _DATA = r"\.(csv|tsv|json|jsonl|ndjson|parquet|xlsx|xls|feather|pkl|pickle|pt|npz|npy)$"
@@ -194,11 +207,14 @@ def _git(root: Path, *args: str) -> bytes:
     return res.stdout
 
 
-def candidate_files(root: Path) -> list[str]:
-    """Tracked plus staged (added/copied/modified/renamed) paths, deduplicated."""
+def candidate_files(root: Path, include_untracked: bool = True) -> list[str]:
+    """Tracked, staged (added/copied/modified/renamed) and, by default, untracked-not-ignored paths."""
     tracked = _git(root, "ls-files", "-z").split(b"\0")
     staged = _git(root, "diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z").split(b"\0")
-    names = {p.decode("utf-8", "surrogateescape") for p in tracked + staged if p}
+    untracked: list[bytes] = []
+    if include_untracked:
+        untracked = _git(root, "ls-files", "-z", "--others", "--exclude-standard").split(b"\0")
+    names = {p.decode("utf-8", "surrogateescape") for p in tracked + staged + untracked if p}
     return sorted(names)
 
 
@@ -253,9 +269,9 @@ def check_file(root: Path, rel: str) -> list[tuple[int, str]]:
     return out
 
 
-def run(root: Path) -> list[str]:
+def run(root: Path, include_untracked: bool = True) -> list[str]:
     report: list[str] = []
-    for rel in candidate_files(root):
+    for rel in candidate_files(root, include_untracked):
         for line, rule in check_file(root, rel):
             report.append(f"{rel}:{line}: {rule}" if line else f"{rel}: {rule}")
     return report
@@ -265,10 +281,12 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--root", type=Path, default=None, help="repository root (default: git toplevel of cwd)")
     ap.add_argument("--max-lines", type=int, default=200, help="cap on printed violations")
+    ap.add_argument("--tracked-only", action="store_true",
+                    help="skip untracked files (default: untracked, non-ignored files are checked too)")
     args = ap.parse_args(argv)
     try:
         root = args.root or Path(_git(Path.cwd(), "rev-parse", "--show-toplevel").decode().strip())
-        report = run(root)
+        report = run(root, include_untracked=not args.tracked_only)
     except (RuntimeError, OSError) as exc:
         print(f"check_publishable: error: {exc}", file=sys.stderr)
         return 2

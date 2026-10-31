@@ -4,11 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [0.2.0] - Unreleased
+## [0.2.0] - 2026-10-31
 
 First packaged release. The version moves from the unreleased 0.1.0 of the initial import to 0.2.0 because it adds the
 reliability work below (position tiers, fidelity risk, catalog status, override guard, parser rounds 5 to 8). The package,
 `cali_address.__version__` and the API (`/openapi.json`) now report the same version.
+
+### Added (reentrenamiento 2026-10, 2026-10-31; no promovido)
+
+> Los elementos marcados con † (al inicio de cada viñeta o junto al nombre) describen código del proyecto de origen, aún no publicado en este espejo (`normalizador_direcciones/` de este repositorio no incluye esos scripts ni módulos; `decision.py`, `output_schema.py`, `onnx_backend.py` y `tokenizer.py` solo están como copia de servicio en `normalizador_produccion/src/cali_address/`). Lo que se agregó en este espejo es la documentación 11 a 14, los scripts y módulos de ciudad sintética y de gráficos (`city_adapter`, `city_eval`, `synthetic_city`, `prepare_city.py`, `eval_city.py`, `synthetic_city_e2e.py`, `make_doc_charts.py`) y la imagen candidata `normalizador_produccion/`.
+
+- † Nueva fuente oficial de datos: capa WFS de nomenclatura domiciliaria de la IDESC (692 389 registros: `cert`, `pcer`, `lote` y `prov`), descarga paginada y reanudable, con validación contra el shapefile de referencia. Las coordenadas del índice se reproyectan localmente de EPSG:6249 a EPSG:4326.
+- † Limpieza de la nomenclatura con reglas contadas y cuarentena con motivo (1 126 de 692 389 filas, 0.0016; límite 0.5 %). Estados `lote` y `prov` excluidos del índice.
+- † Índices por niveles de fuente (`cert`, `cert,pcer`) con contabilidad de registros sin pérdidas, y respaldo de catastro opcional y reversible (6 941 documentos añadidos después de los de nomenclatura, sin reentrenar; retiro byte a byte y interruptor `exclude_fuentes` / `NORMALIZER_EXCLUDE_FUENTES`).
+- † Capa de decisión calibrada: umbrales de predio y manzana, piso de confianza, bandas `alta` / `media` / `baja` y motivos de emisión. Calibración ajustada con pares reales de entrenamiento y validación cruzada por grupos de dirección.
+- † Validación de salidas con pydantic v2 (`validate_outputs`: `off` por defecto, `report`, `correct`).
+- Auditoría con JEV (juez basado en modelo de lenguaje), solo sobre filas públicas de nomenclatura y consultas sintéticas. Ni la concordancia ni el juez validan la corrección del lote.
+- † Backend de inferencia ONNX Runtime (`onnx`, `onnx-int8`) opcional, con paridad medida frente a torch. `torch` sigue siendo el defecto.
+- Reproducibilidad y guardas: hashes de archivos en `index_meta.json`, criterios de aceptación fijados antes de entrenar, prueba congelada puntuada una sola vez, bootstrap con semilla fija, y producción sin modificar en cada corrida.
+- Documentación: `documentacion/14-reentrenamiento-2026-10.md` (especificación técnica y veredicto de confiabilidad).
+- **Veredicto: NO APRUEBA** (6 de 12 criterios aprobados). La promoción a producción queda pendiente de la aprobación explícita del responsable del proyecto. Los artefactos publicados no cambian: el servicio en producción conserva el modelo anterior y `normalizador_produccion/` contiene la imagen candidata (staging), no apta para producción hasta la aprobación del titular.
 
 ### Added
 

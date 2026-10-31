@@ -31,7 +31,7 @@ if [[ -z "$data_root" || ! -d "$data_root" ]]; then
 fi
 
 status=0
-for sub in normalizador_direcciones emparejador_direcciones validacion_jev; do
+for sub in normalizador_direcciones normalizador_produccion emparejador_direcciones validacion_jev; do
   echo "[pre-push] real-address scan: $sub"
   rc=0
   "$py" "$scanner" --root "$sub" --data-root "$data_root" || rc=$?
