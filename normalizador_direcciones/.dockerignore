@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # PRIVACY: real citizen data. Never build these into an image.
-#   context/  insured-property registry (source A), disaster-victim registry
-#             (source B: names and ID numbers), field inspection reports
+#   context/  insured-property registry (Fasecolda), disaster-victim registry
+#             (RUD: names and ID numbers), field inspection reports
 #   outputs/  normalization results derived from the above
 # ---------------------------------------------------------------------------
 context/
