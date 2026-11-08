@@ -40,7 +40,7 @@ P(predio) is a conservative estimate; the sample is small (a few hundred rows).
 
 ``logistic --gold-only`` (v5, ``reliability-v5-gold``): the same logistic fit on text-consistent
 rows only (``gt_quality == "gold"``, carried into the rows by ``eval_strict.py``). On all labelled
-rows the predio label is dominated by GPS-to-parcel noise (noisy rows are far less often "correct" than
+rows the predio label is dominated by GPS-to-parcel noise (noisy rows: ~23 % "correct" vs ~99 % on
 gold rows), which hides the ``margen_predio`` signal; on gold labels it ranks well. Same serving
 format as v2, so the current loader serves it. Written to a NEW file (never over
 ``reliability.json`` unless promoted on purpose).
@@ -75,7 +75,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from cali_address.reliability import (  # noqa: E402
-    BANDS, CLIP, FEATURE_NAMES, HYBRID_CLIP, KINDS, P_MAX, P_MIN, interpolate_knots, reliability_cell,
+    BANDS, CLIP, FEATURE_NAMES, HYBRID_CLIP, KINDS, P_MAX, P_MIN, SOURCE_FEATURE, interpolate_knots, reliability_cell,
+    source_feature_value,
 )
 
 #: Ship rule: out-of-fold log loss must not exceed the raw-score baseline, and Brier may
@@ -141,7 +142,7 @@ def fit_logistic(Z: np.ndarray, y: np.ndarray, C: float, score_index: int = SCOR
         if not cols:  # nothing left to fit: constant (base-rate) model
             rate = float(np.clip(y.mean(), 0.01, 0.99))
             return np.zeros(n_feat), float(np.log(rate / (1 - rate)))
-        clf = LogisticRegression(C=C, solver="lbfgs", max_iter=1000)  # L2 is the default penalty
+        clf = LogisticRegression(C=C, penalty="l2", solver="lbfgs", max_iter=1000)
         clf.fit(Z[:, cols], y)
         coef = np.zeros(n_feat)
         coef[cols] = clf.coef_[0]
@@ -682,6 +683,18 @@ def load_training_rows(paths, gold_only: bool = False) -> pd.DataFrame:
     return out
 
 
+def source_feature_column(df: pd.DataFrame) -> np.ndarray:
+    """``src_pcer`` per row: 1.0 when the selected document's ``fuente`` is ``nomenclatura_pcer``, else 0.0.
+
+    ``fuente`` is the column ``eval_strict.py`` appends when the index carries it; a missing value counts as 0.0 (as at
+    serving). A rows file without the column cannot be used with ``--source-feature``.
+    """
+    if "fuente" not in df.columns:
+        raise SystemExit("--source-feature needs a 'fuente' column in the rows parquet; "
+                         "rerun eval_strict.py against an index that carries it")
+    return np.array([source_feature_value(v) for v in df["fuente"]], dtype=float)
+
+
 def _print_metrics(title: str, table: dict[str, dict]) -> None:
     print(f"\n{title}")
     print(f"{'source':<22}{'n':>6}{'brier':>9}{'logloss':>9}{'ece5':>8}{'auc':>8}")
@@ -704,8 +717,14 @@ def main(argv: list[str] | None = None) -> int:
                          "writes a reliability-v5-gold artifact")
     ap.add_argument("--force", action="store_true",
                     help="cells only: write the artifact even if it fails the ship rule (marked in the file)")
+    ap.add_argument("--source-feature", action="store_true",
+                    help="logistic only (default OFF): add the 'src_pcer' feature (1.0 when the selected document's fuente "
+                         "is nomenclatura_pcer); needs a 'fuente' column in the rows. The artifact records it "
+                         "(feature_names + source_feature=true) so serving computes it")
     ap.add_argument("--out", default=None)
     args = ap.parse_args(argv)
+    if args.source_feature and args.kind != "logistic":
+        ap.error("--source-feature is only implemented for --kind logistic")
     from cali_address.paths import resolve_artifacts_dir
     art = resolve_artifacts_dir(args.artifacts_dir)
     args.rows = args.rows or [os.path.join(art, "strict_eval_paso7_rows.parquet")]
@@ -724,7 +743,10 @@ def main(argv: list[str] | None = None) -> int:
     from cali_address.paths import code_fingerprint
     df = load_training_rows(args.rows, gold_only=args.gold_only)
     groups = df["dataset"].to_numpy()
+    names = list(FEATURE_NAMES) + ([SOURCE_FEATURE] if args.source_feature else [])
     X = df[[f"feat_{n}" for n in FEATURE_NAMES]].to_numpy(dtype=float)
+    if args.source_feature:
+        X = np.column_stack([X, source_feature_column(df)])
     relaxed = df["motivo"].fillna("").str.startswith("aproximado").to_numpy()
     base_p = df["confianza"].to_numpy(dtype=float)
     print(f"training rows (OK with GT): {len(df)}; per dataset: {dict(pd.Series(groups).value_counts())}")
@@ -733,12 +755,17 @@ def main(argv: list[str] | None = None) -> int:
     prefix = GOLD_VERSION_PREFIX if args.gold_only else VERSION_PREFIX
     payload = {"kind": "logistic", "version": f"{prefix}-{dt.date.today():%Y%m%d}",
                "fit_date": dt.datetime.now().isoformat(timespec="seconds"),
-               "feature_names": list(FEATURE_NAMES), "n_train": int(len(df)),
+               "feature_names": names, "n_train": int(len(df)),
                "source_rows": rows_label(args.rows),
                "label_quality": "gold" if args.gold_only else "all",
                "code_fingerprint": code_fingerprint()[:12],
                "cv_protocol": "nested leave-one-dataset-out (C chosen by an inner leave-one-dataset-out loop)",
                "cv": {}, "notes": []}
+    if args.source_feature:
+        payload["source_feature"] = True
+        payload["notes"].append(
+            "Opt-in source feature: src_pcer is 1.0 when the selected document's fuente is nomenclatura_pcer, else 0.0 "
+            "(missing fuente is 0.0). Serving computes it only because this artifact lists it.")
     if args.gold_only:
         payload["notes"].append(
             "Fitted on text-consistent (gold) rows only: the GT parcel's own cadastral address agrees with the "
@@ -787,7 +814,7 @@ def main(argv: list[str] | None = None) -> int:
         if fit["dropped_score"]:
             payload["notes"].append(f"{target}: raw-score coefficient was negative; feature dropped and refit.")
         print(f"\n[{target}] final C={C}; coefficients (standardized):")
-        for n, c in zip(FEATURE_NAMES, fit["coef"]):
+        for n, c in zip(names, fit["coef"]):
             print(f"  {n:<16}{c:+.3f}")
         print(f"  intercept       {fit['intercept']:+.3f}")
 

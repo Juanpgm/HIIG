@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -16,13 +17,26 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-import torch
-import torch.nn.functional as F
 from rapidfuzz import fuzz
 
+# torch is optional and imported lazily: only the default ``torch`` backend needs it (``_load_torch``,
+# called by the constructor); the onnx / onnx-int8 backends never import it, even when it is installed.
+torch = None
+F = None
+
+
+def _load_torch() -> None:
+    """Import torch into this module's globals; raises the original ImportError if it is not installed."""
+    global torch, F
+    if torch is None:
+        import torch as _torch
+        import torch.nn.functional as _F
+        torch, F = _torch, _F
+
 from .dataset import OWN_CENTROID_COLUMNS, own_centroid_table
-from .geo import to_metric
-from .model import AddressEncoder, encode_batch
+from .geo import haversine_m, to_metric
+from .onnx_backend import load_onnx_serving, resolve_backend
+from .tokenizer import encode_batch
 from .parser import (
     _pre_normalize,
     canonical,
@@ -31,9 +45,13 @@ from .parser import (
     match_key,
     parse_address,
     render_complement,
+    set_pre_normalize_separation,
 )
-from .paths import DEFAULT_ARTIFACTS_DIR, OWN_CENTROIDS_FILENAME, model_path, shared_path
+from .paths import (
+    DEFAULT_ARTIFACTS_DIR, OWN_CENTROIDS_FILENAME, model_path, read_pre_normalize_flag, shared_path,
+)
 from .refine import refine_address
+from .output_schema import MODES as VALIDATE_OUTPUT_MODES
 from .reliability import RELIABILITY_FILENAME, load_reliability
 
 __all__ = [
@@ -47,6 +65,7 @@ __all__ = [
     "DECISION_KEYS",
     "normalize_soft_rules",
     "validate_decision",
+    "check_validate_outputs",
 ]
 
 #: Fallback weights of the reranking score, used when ``artifacts/tuning.json`` is
@@ -86,7 +105,7 @@ SOFT_RULE_NAMES = (
 )
 
 #: Keys the optional ``chosen.decision`` block of ``tuning.json`` may carry.
-DECISION_KEYS = ("soft_rules", "max_soft", "gate_fallback")
+DECISION_KEYS = ("soft_rules", "max_soft", "gate_fallback", "validate_outputs")
 
 
 def normalize_soft_rules(value) -> frozenset:
@@ -116,6 +135,13 @@ def validate_max_soft(value) -> int:
     return value
 
 
+def check_validate_outputs(value) -> str:
+    """``validate_outputs`` must be one of :data:`VALIDATE_OUTPUT_MODES` (``off`` / ``report`` / ``correct``)."""
+    if not isinstance(value, str) or value not in VALIDATE_OUTPUT_MODES:
+        raise ValueError(f"validate_outputs must be one of {', '.join(VALIDATE_OUTPUT_MODES)}, got {value!r}")
+    return value
+
+
 def validate_decision(decision) -> dict:
     """Validate the ``chosen.decision`` block of ``tuning.json`` and return a plain dict copy."""
     if not isinstance(decision, dict):
@@ -134,6 +160,8 @@ def validate_decision(decision) -> dict:
         if not isinstance(decision["gate_fallback"], bool):
             raise ValueError(f"gate_fallback must be a bool, got {decision['gate_fallback']!r}")
         out["gate_fallback"] = decision["gate_fallback"]
+    if "validate_outputs" in decision:
+        out["validate_outputs"] = check_validate_outputs(decision["validate_outputs"])
     return out
 
 
@@ -624,17 +652,45 @@ class _Doc:
     n_predios: int
 
 
+def _no_grad(fn):
+    """``torch.no_grad()`` when torch is installed; a no-op wrapper when it is not (onnx backends)."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        if torch is None:
+            return fn(*args, **kwargs)
+        with torch.no_grad():
+            return fn(*args, **kwargs)
+    return wrapper
+
+
 class AddressNormalizer:
-    """Loads the cached model + embeddings and normalizes addresses."""
+    """Loads the cached model + embeddings and normalizes addresses.
+
+    The raw view the encoder reads depends on ``parser.PRE_NORMALIZE_SEPARATES_LETTERS``, which is a
+    PROCESS-GLOBAL switch. The constructor sets it from the artifact directory: ``True`` only when its
+    ``index_meta.json`` has ``"pre_normalize_separates_letters": true``; otherwise (no marker, no key,
+    or ``false``) it is set to ``False``. Consequently two normalizers whose artifacts declare
+    different values must not share a process (``scripts/eval_strict.py`` runs one artifact
+    directory per process). A malformed ``index_meta.json`` or a non-boolean value raises.
+    """
 
     def __init__(
         self,
         artifacts_dir: str = DEFAULT_ARTIFACTS_DIR,
         device: str | None = None,
         docs: pd.DataFrame | None = None,
+        backend: str | None = None,
     ) -> None:
         self.artifacts_dir = artifacts_dir
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        #: ``torch`` (default, reference), ``onnx`` or ``onnx-int8``: parameter > NORMALIZER_BACKEND > torch.
+        self.backend = resolve_backend(backend)
+        if self.backend == "torch":
+            _load_torch()
+        set_pre_normalize_separation(read_pre_normalize_flag(artifacts_dir) is True)
+        if self.backend != "torch":
+            self.device = "cpu"  # onnxruntime CPU provider only; a cuda request is ignored
+        else:
+            self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         tuning = load_tuning(artifacts_dir)
         self.weights = dict(tuning["weights"])
         self.threshold = float(tuning["threshold"])
@@ -644,21 +700,31 @@ class AddressNormalizer:
         self.tuning_source = tuning["source"]
         #: Calibrated reliability model, or None (columns stay None) if the artifact is absent.
         self.reliability = load_reliability(os.path.join(artifacts_dir, RELIABILITY_FILENAME))
-        ckpt = torch.load(model_path("model.pt", artifacts_dir), map_location="cpu", weights_only=False)
-        cfg = ckpt["config"]
-        self.max_len = int(cfg.get("max_len", 40))
-        self.model = AddressEncoder(
-            d_model=cfg["d_model"], n_layers=cfg["n_layers"], n_heads=cfg["n_heads"],
-            d_out=cfg["d_out"], dropout=0.0, n_comuna=ckpt["n_comuna"],
-            n_barrio=ckpt["n_barrio"], max_len=self.max_len,
-        )
-        self.model.load_state_dict(ckpt["state_dict"])
-        self.model.eval().to(self.device)
-        self.xy_mean = np.asarray(ckpt["xy_mean"], dtype="float64")
-        self.xy_std = np.asarray(ckpt["xy_std"], dtype="float64")
+        if self.backend == "torch":
+            from .model import AddressEncoder
 
-        emb = torch.load(model_path("catastro_emb.pt", artifacts_dir), map_location="cpu")
-        self.doc_emb = emb.to(self.device)
+            ckpt = torch.load(model_path("model.pt", artifacts_dir), map_location="cpu", weights_only=False)
+            cfg = ckpt["config"]
+            self.max_len = int(cfg.get("max_len", 40))
+            self.model = AddressEncoder(
+                d_model=cfg["d_model"], n_layers=cfg["n_layers"], n_heads=cfg["n_heads"],
+                d_out=cfg["d_out"], dropout=0.0, n_comuna=ckpt["n_comuna"],
+                n_barrio=ckpt["n_barrio"], max_len=self.max_len,
+            )
+            self.model.load_state_dict(ckpt["state_dict"])
+            self.model.eval().to(self.device)
+            self.xy_mean = np.asarray(ckpt["xy_mean"], dtype="float64")
+            self.xy_std = np.asarray(ckpt["xy_std"], dtype="float64")
+
+            emb = torch.load(model_path("catastro_emb.pt", artifacts_dir), map_location="cpu")
+            self.doc_emb = emb.to(self.device)
+        else:
+            # No torch here: ONNX session + fp16 numpy document matrix (see cali_address.onnx_backend).
+            self._onnx, self._doc_index, meta = load_onnx_serving(artifacts_dir, self.backend)
+            self.max_len = int(meta["max_len"])
+            self.model = None
+            self.xy_mean, self.xy_std = self._onnx.xy_mean, self._onnx.xy_std
+            self.doc_emb = self._doc_index._docs
         if docs is None:
             # An experiment dir may omit the model-independent cadastral index.
             docs = pd.read_parquet(shared_path("catastro_docs.parquet", artifacts_dir))
@@ -676,6 +742,10 @@ class AddressNormalizer:
         own = load_own_centroids(self.docs, artifacts_dir)
         self._own_lon, self._own_lat = own if own is not None else (None, None)
         self._n_predios = self.docs["n_predios"].to_numpy()
+        #: Optional nomenclature-index columns (``None`` for production-style docs: no output column then).
+        self._fuente = self.docs["fuente"].to_numpy() if "fuente" in self.docs.columns else None
+        self._estado_nomenclatura = (
+            self.docs["estado_nomenclatura"].to_numpy() if "estado_nomenclatura" in self.docs.columns else None)
         self._manzana_nunique = load_manzana_nunique(self.docs)
         if {"x_m", "y_m"}.issubset(self.docs.columns):
             self._x_m = self.docs["x_m"].to_numpy()
@@ -689,8 +759,10 @@ class AddressNormalizer:
         self._parsed_docs: dict[int, object] = {}
 
     # -- encoding ---------------------------------------------------------
-    @torch.no_grad()
+    @_no_grad
     def encode_queries(self, texts: list[str], role: int = 0, batch: int = 1024) -> torch.Tensor:
+        if self.backend != "torch":
+            return self._onnx.embed(texts).astype(np.float16)
         out = torch.empty((len(texts), self.doc_emb.shape[1]), dtype=torch.float16, device=self.device)
         for i in range(0, len(texts), batch):
             ids = torch.from_numpy(
@@ -701,7 +773,7 @@ class AddressNormalizer:
             out[i : i + batch] = F.normalize(emb.float(), dim=-1).half()
         return out
 
-    @torch.no_grad()
+    @_no_grad
     def encode_queries_exact(self, texts: list[str], role: int = 0, batch: int = 1024) -> torch.Tensor:
         """Unit-norm query embeddings in fp32, without autocast.
 
@@ -710,6 +782,8 @@ class AddressNormalizer:
         to flip a status near the confidence cutoff (audit 2026-10: 4 flips in 5,725 rows
         between one batch and batches of 64). Scoring uses this one instead.
         """
+        if self.backend != "torch":
+            return self._onnx.embed(texts)
         out = torch.empty((len(texts), self.doc_emb.shape[1]), dtype=torch.float32, device=self.device)
         for i in range(0, len(texts), batch):
             ids = torch.from_numpy(
@@ -718,7 +792,7 @@ class AddressNormalizer:
             out[i : i + batch] = F.normalize(self.model.embed(ids, role=role).float(), dim=-1)
         return out
 
-    @torch.no_grad()
+    @_no_grad
     def search_exact(self, q_emb: torch.Tensor, k: int = 20, chunk: int = 512):
         """Top-k search whose scores are exact fp32 products.
 
@@ -727,6 +801,8 @@ class AddressNormalizer:
         returned similarity of each candidate is recomputed in fp32 from the unrounded query
         embedding, so it no longer carries fp16 quantisation or batch-dependent rounding.
         """
+        if self.backend != "torch":
+            return self._doc_index.search_exact(q_emb, k=k, chunk=chunk)
         sims_out, idx_out = [], []
         for i in range(0, q_emb.shape[0], chunk):
             q = q_emb[i : i + chunk]
@@ -736,7 +812,7 @@ class AddressNormalizer:
             idx_out.append(top.indices.cpu().numpy())
         return np.concatenate(sims_out), np.concatenate(idx_out)
 
-    @torch.no_grad()
+    @_no_grad
     def predict_xy(self, texts: list[str], batch: int = 1024) -> np.ndarray:
         """Coordinate predicted by the auxiliary regression head, in metres (EPSG:3116).
 
@@ -744,6 +820,8 @@ class AddressNormalizer:
         uses it to damp candidates that match the text but sit in the wrong part
         of the city.
         """
+        if self.backend != "torch":
+            return self._onnx.predict_xy(texts)
         out = np.zeros((len(texts), 2), dtype=np.float64)
         for i in range(0, len(texts), batch):
             ids = torch.from_numpy(
@@ -755,9 +833,11 @@ class AddressNormalizer:
             out[i : i + batch] = xy.float().cpu().numpy()
         return out * self.xy_std + self.xy_mean
 
-    @torch.no_grad()
+    @_no_grad
     def search(self, q_emb: torch.Tensor, k: int = 20, chunk: int = 512):
         """Top-k cosine search against the full index (chunked fp16 matmul)."""
+        if self.backend != "torch":
+            return self._doc_index.search_exact(np.asarray(q_emb, dtype=np.float32), k=k, chunk=chunk)
         sims_out, idx_out = [], []
         for i in range(0, q_emb.shape[0], chunk):
             sims = q_emb[i : i + chunk] @ self.doc_emb.T
@@ -798,13 +878,25 @@ class AddressNormalizer:
                 ("doc", np.int64), ("sim", np.float32), ("fuzz", np.float32), ("struct", np.float32), ("geo", np.float32))}
             empty["parse_ok"] = np.zeros(0, dtype=bool)
             return empty
-        e1 = self.encode_queries_exact(q_text, role=0)
-        e2 = self.encode_queries_exact(prenorm, role=0)
-        s1, i1 = self.search_exact(e1, k=k)
-        s2, i2 = self.search_exact(e2, k=k)
+        pred_xy = None
+        if self.backend == "torch":
+            e1 = self.encode_queries_exact(q_text, role=0)
+            e2 = self.encode_queries_exact(prenorm, role=0)
+        else:
+            # one graph run gives both the embedding and the coordinate of the primary query text
+            e1, pred_xy = self._onnx.embed_with_xy(q_text)
+            e2 = self._onnx.embed(prenorm)
+        if self.backend == "torch":
+            s1, i1 = self.search_exact(e1, k=k)
+            s2, i2 = self.search_exact(e2, k=k)
+        else:
+            # one pass over the document matrix for both views (the scan is memory-bound)
+            s_all, i_all = self.search_exact(np.concatenate([e1, e2]), k=k)
+            s1, s2, i1, i2 = s_all[:n], s_all[n:], i_all[:n], i_all[n:]
         cand_idx = np.concatenate([i1, i2], axis=1)
         cand_sims = np.concatenate([s1, s2], axis=1)
-        pred_xy = self.predict_xy(q_text)
+        if pred_xy is None:
+            pred_xy = self.predict_xy(q_text)
 
         width = cand_idx.shape[1]
         out = {

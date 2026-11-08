@@ -8,13 +8,12 @@ dynamic = ["version"]
 description = "Normalize and match addresses from any dataset against the Cali (Colombia) cadastre"
 readme = "README.md"
 requires-python = ">=3.11"  # tomllib (config files) needs 3.11
-license = { text = "Apache-2.0" }
+# License intentionally not declared yet (the owner has not chosen one).
 keywords = ["address", "geocoding", "normalization", "cadastre", "cali", "colombia"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: GIS",
-    "License :: OSI Approved :: Apache Software License",
 ]
 dependencies = [
     # CPU-only wheels: `pip install torch --index-url https://download.pytorch.org/whl/cpu`
@@ -27,10 +26,13 @@ dependencies = [
     "shapely>=2.0",
     "pyproj>=3.6",
     "pyshp>=2.3",
+    "pydantic>=2.5",  # output validation (cali_address.output_schema)
 ]
 
 [project.optional-dependencies]
 api = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "python-multipart>=0.0.9", "pydantic>=2.5"]
+# Optional torch-free serving backends (NORMALIZER_BACKEND=onnx | onnx-int8); see docs/onnx.md.
+onnx = ["onnx>=1.16", "onnxruntime>=1.18"]
 sql = ["sqlalchemy>=2.0"]
 excel = ["openpyxl>=3.1", "xlrd>=2.0"]
 geo = ["geopandas>=0.14", "pyogrio>=0.7", "shapely>=2.0"]

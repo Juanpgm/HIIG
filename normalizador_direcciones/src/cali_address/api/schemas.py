@@ -106,7 +106,12 @@ class InspectResponse(BaseModel):
 
 
 class ResultRow(BaseModel):
-    """Una fila normalizada. Es el mismo contrato que produce la CLI."""
+    """Una fila normalizada. Es el mismo contrato que produce la CLI.
+
+    Las columnas opcionales ``fuente`` y ``estado_nomenclatura`` (documento catastral elegido) no estan declaradas
+    a proposito: solo existen cuando el indice las trae y pasan tal cual (``extra="allow"``); declararlas agregaria
+    una clave nula a cada respuesta de los indices de produccion.
+    """
 
     direccion_entrada: Any | None = Field(description="Texto original recibido.")
     estado: Literal["OK", "SIN_MATCH", "NO_PARSEABLE"] = Field(

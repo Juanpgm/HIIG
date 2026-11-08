@@ -10,6 +10,11 @@ default ``artifacts/``). Model-independent inputs (``train_data.npz``,
 when absent from the out-dir. With the default directory the script behaves as it
 always did (and ``SMOKE=1`` still saves nothing there, to protect production).
 
+An out-dir that contains ``index_meta.json`` declares an index and is self-contained: its index files
+never fall back to ``artifacts/`` (a missing one is an error), real pairs default to its own
+``train_pairs.parquet`` (empty set with a warning if absent), ``len(d_tokens)`` must equal
+``index_meta["n_docs"]`` and ``pre_normalize_separates_letters`` is applied to data rebuilds.
+
 Modes
 -----
 ``mixed``     from scratch, synthetic queries plus (``--real-frac``) real pairs.
@@ -23,6 +28,7 @@ sizes, seconds, metrics) next to ``model.pt``.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -34,10 +40,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from cali_address.experiment import (  # noqa: E402
-    all_defaults, final_epoch_metrics, parse_overrides, write_experiment_json,
+    EXTRA_DEFAULTS, all_defaults, final_epoch_metrics, parse_overrides, write_experiment_json,
 )
+from cali_address.parser import pre_normalize_separation  # noqa: E402
 from cali_address.paths import (  # noqa: E402
-    DEFAULT_ARTIFACTS_DIR, code_fingerprint, is_default_dir, resolve_artifacts_dir, shared_path,
+    DEFAULT_ARTIFACTS_DIR, INDEX_MARKER, IndexFileMissingError, code_fingerprint, is_default_dir, is_index_dir,
+    read_index_meta, read_pre_normalize_flag, resolve_artifacts_dir, shared_path,
 )
 from cali_address.train import (  # noqa: E402
     TrainConfig, embed_documents, resolve_device, save_checkpoint, train_model,
@@ -113,18 +121,91 @@ def _cfg_from(hp: dict) -> TrainConfig:
     return TrainConfig(**{k: hp[k] for k in fields})
 
 
+def resolve_real_pairs_path(hp: dict, out_dir: str) -> str | None:
+    """Path of the real pairs to train on (``None`` = the library default).
+
+    ``--real-pairs`` always wins. Without it, a directory that declares an index uses ITS OWN
+    ``train_pairs.parquet`` (remapped to that index's doc ids): the production pairs point at
+    different documents and would silently train against the wrong ones. If the file is missing the
+    returned path does not exist, which ``load_real_pairs`` turns into an empty set; a warning says so.
+    Without the marker nothing changes.
+    """
+    explicit = hp.get("real_pairs") or None
+    if explicit or not is_index_dir(out_dir):
+        return explicit
+    local = os.path.join(out_dir, "train_pairs.parquet")
+    if not os.path.isfile(local):
+        print(f"WARNING: {local} not found in a directory that declares an index; "
+              "training with an empty real-pair set", flush=True)
+    return local
+
+
+def write_npz_replacing(path: str, **arrays) -> None:
+    """``np.savez_compressed`` that first removes the destination.
+
+    An index run's ``train_data.npz`` is a hardlink of the index's own file; writing through it would
+    rewrite the source index in place. Removing the name first makes the write create a new file instead.
+    """
+    if os.path.lexists(path):
+        os.remove(path)
+    np.savez_compressed(path, **arrays)
+
+
+SMOKE_DOC_LIMIT = 20000
+#: Per-query arrays: a subset of the queries must slice every one of them or they fall out of step.
+QUERY_ARRAYS = ("q_tokens", "q_tokens_raw", "q_doc", "q_is_val", "q_source")
+
+
+def subset_for_smoke(data: dict, doc_limit: int = SMOKE_DOC_LIMIT) -> dict:
+    """Keep only the queries of the first ``doc_limit`` documents, in place; returns ``data``.
+
+    Every per-query array is sliced with the same mask, ``q_source`` included (it was left whole before,
+    so after a smoke subset it no longer matched ``q_doc``). ``q_source`` is optional: old data
+    directories do not have it and none is invented.
+    """
+    keep = np.flatnonzero(data["q_doc"] < doc_limit)
+    for k in QUERY_ARRAYS:
+        if k in data:
+            data[k] = data[k][keep]
+    return data
+
+
+def check_index_n_docs(n_docs: int, index_meta: dict) -> None:
+    """Fail unless the training tensors have exactly the documents the index declares."""
+    declared = index_meta.get("n_docs")
+    if isinstance(declared, bool) or not isinstance(declared, int) or declared < 0:
+        raise ValueError(f"{INDEX_MARKER} must declare a non-negative integer n_docs, got {declared!r}")
+    if int(n_docs) != declared:
+        raise ValueError(
+            f"train_data.npz has {int(n_docs)} documents but {INDEX_MARKER} declares n_docs={declared}: "
+            "the tensors and the index are out of sync"
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     out_dir = resolve_artifacts_dir(args.out_dir)
     hp, _ = resolve_hparams(args)
     cfg = _cfg_from(hp)
     cfg.validate()
+    index_meta = read_index_meta(out_dir)           # None unless the directory declares an index
+    separation = read_pre_normalize_flag(out_dir)   # None = the artifact does not say: leave as is
     os.makedirs(out_dir, exist_ok=True)
+    with contextlib.ExitStack() as stack:
+        if separation is not None:
+            stack.enter_context(pre_normalize_separation(separation))   # restored even if training fails
+        return _run(argv, args, out_dir, hp, cfg, index_meta)
+
+
+def _run(argv, args, out_dir: str, hp: dict, cfg: TrainConfig, index_meta: dict | None) -> int:
     t_all = time.time()
 
     data = {k: v for k, v in np.load(shared_path("train_data.npz", out_dir), allow_pickle=True).items()}
     neg = np.load(shared_path("spatial_negatives.npy", out_dir))
     n_docs = len(data["d_tokens"])
+    if index_meta is not None:
+        check_index_n_docs(n_docs, index_meta)
+    pairs_path = resolve_real_pairs_path(hp, out_dir)
     info: dict = {}
 
     if hp["realistic_noise"]:
@@ -134,10 +215,10 @@ def main(argv: list[str] | None = None) -> int:
         from cali_address.realpairs import DEFAULT_PAIRS_PATH
 
         docs = pd.read_parquet(shared_path("catastro_docs.parquet", out_dir))
-        splits = os.path.dirname(hp["real_pairs"] or DEFAULT_PAIRS_PATH)
+        splits = os.path.dirname(pairs_path or DEFAULT_PAIRS_PATH)
         strings = []
         for name in ("train_pairs.parquet", "unlabeled_addresses.parquet"):
-            path = hp["real_pairs"] if (name == "train_pairs.parquet" and hp["real_pairs"]) else os.path.join(splits, name)
+            path = pairs_path if (name == "train_pairs.parquet" and pairs_path) else os.path.join(splits, name)
             if os.path.exists(path):
                 strings += pd.read_parquet(path, columns=["raw_address"])["raw_address"].dropna().astype(str).tolist()
         est = estimate_op_scale(strings, docs["direccion"].tolist(), seed=cfg.seed)
@@ -145,13 +226,11 @@ def main(argv: list[str] | None = None) -> int:
         print("realistic noise op_scale:", json.dumps(est["op_scale"]), flush=True)
         data.update(build_training_arrays(docs, n_variants=hp["n_variants"], seed=42,
                                           op_scale=est["op_scale"]))
-        np.savez_compressed(os.path.join(out_dir, "train_data.npz"), **data)
+        write_npz_replacing(os.path.join(out_dir, "train_data.npz"), **data)
         n_docs = len(data["d_tokens"])
 
     if hp["smoke"]:
-        keep = np.flatnonzero(data["q_doc"] < 20000)
-        for k in ("q_tokens", "q_tokens_raw", "q_doc", "q_is_val"):
-            data[k] = data[k][keep]
+        subset_for_smoke(data)
 
     plate = None
     if cfg.plate_neg_weight > 0:
@@ -159,7 +238,10 @@ def main(argv: list[str] | None = None) -> int:
         from cali_address.dataset import build_plate_negatives
 
         name = f"plate_negatives_c{cfg.plate_neg_count}_d{cfg.plate_neg_max_delta}.npy"
-        cached = shared_path(name, out_dir)
+        try:
+            cached = shared_path(name, out_dir)
+        except IndexFileMissingError:       # a declared index has no cache yet: build it here, never borrow one
+            cached = os.path.join(out_dir, name)
         if os.path.exists(cached) and len(np.load(cached, mmap_mode="r")) == n_docs:
             plate = np.load(cached)
         else:
@@ -171,7 +253,7 @@ def main(argv: list[str] | None = None) -> int:
     from cali_address.realpairs import load_real_pairs
 
     real = load_real_pairs(
-        n_docs, comuna_codes=data.get("comuna_codes"), path=hp["real_pairs"] or None,
+        n_docs, comuna_codes=data.get("comuna_codes"), path=pairs_path,
         val_frac=cfg.real_val_frac, seed=int(hp["real_split_seed"]), max_len=cfg.max_len,
     )
     print("real pairs:", json.dumps(real.stats), flush=True)

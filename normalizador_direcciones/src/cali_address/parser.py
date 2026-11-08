@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
 from typing import Iterable
@@ -50,6 +51,9 @@ __all__ = [
     "is_tower_name_word",
     "ComplementMerge",
     "match_key",
+    "normalize_spacing",
+    "pre_normalize_separation",
+    "set_pre_normalize_separation",
     "strip_accents",
     "VIA_TYPE_CANON",
     "COMPLEMENT_CANON",
@@ -271,6 +275,78 @@ def _symbols_to_text(raw: str) -> str:
     return text.replace("º", " ").replace("ª", " ")
 
 
+#: Start of a complement (unit kind) inside an address: a registered kind that is not glued to a
+#: previous word and is followed by a non-letter (``AP 302``, ``AP302``, ``APTO 5``).
+_SPACING_COMPLEMENT_RE = re.compile(
+    r"(?<![^\W_])(?:" + "|".join(re.escape(k) for k in sorted(COMPLEMENT_CANON, key=len, reverse=True)) + r")(?![^\W\d_])",
+    re.IGNORECASE,
+)
+#: A single letter right after a digit and before anything that is not a letter or a digit:
+#: ``32B`` -> ``32 B``. ``5B1`` (letter-digit designator), ``32BIS``, ``10OESTE`` and ``3BNORTE`` do not match.
+_SPACING_LETTER_RE = re.compile(r"(?<=\d)([^\W\d_])(?![^\W_])")
+
+
+def normalize_spacing(text: object, require_hash: bool = False) -> str:
+    """Separate a street letter glued to a via/cross number (``32B`` -> ``32 B``, ``8A`` -> ``8 A``).
+
+    Only the main address (via and cross) is touched: everything from the first complement kind
+    (``AP 302B``, ``APT 201B``) and everything after the plate dash (``- 131B``) is returned verbatim.
+    A letter that is part of a longer word (``BIS``, ``OESTE``, ``BNORTE``, ordinals) or that is
+    followed by a digit (``5B1``) is left alone, as is ``NO654``. Idempotent; ``None`` gives ``""`` and
+    non-strings are stringified.
+
+    ``require_hash=True`` only acts on the explicit ``#`` form: without a number sign the reading of a
+    letter next to a number is ambiguous and the parser keeps its historical reading (round 7), so
+    :func:`_pre_normalize` uses that variant.
+    """
+    if text is None:
+        return ""
+    s = text if isinstance(text, str) else str(text)
+    if require_hash and "#" not in s:
+        return s
+    m =_SPACING_COMPLEMENT_RE.search(s)
+    head, tail = (s[: m.start()], s[m.start():]) if m else (s, "")
+    cut = head.find("-")
+    main, plate = (head[:cut], head[cut:]) if cut >= 0 else (head, "")
+    return _SPACING_LETTER_RE.sub(r" \1", main) + plate + tail
+
+
+#: Whether :func:`_pre_normalize` ends with :func:`normalize_spacing`. It changes the raw view the encoder
+#: reads (``KR 32B`` -> ``KR 32 B``). Off by default: the production model was trained on the view
+#: WITHOUT the separation. An artifact opts in with ``"pre_normalize_separates_letters": true`` in its
+#: ``index_meta.json`` (read by ``AddressNormalizer`` and ``scripts/train.py``).
+#: This is a PROCESS-GLOBAL setting: two models that need different values must not share a process.
+PRE_NORMALIZE_SEPARATES_LETTERS = False
+
+
+def set_pre_normalize_separation(enabled: bool) -> bool:
+    """Set :data:`PRE_NORMALIZE_SEPARATES_LETTERS` and return the previous value.
+
+    Process-global and not thread-safe. Only real booleans are accepted: ``"false"`` is truthy, so a
+    string read from a config file would otherwise switch the separation ON by mistake.
+    """
+    global PRE_NORMALIZE_SEPARATES_LETTERS
+    if not isinstance(enabled, bool):
+        raise TypeError(f"pre-normalize separation must be a bool, got {type(enabled).__name__}: {enabled!r}")
+    previous = PRE_NORMALIZE_SEPARATES_LETTERS
+    PRE_NORMALIZE_SEPARATES_LETTERS = enabled
+    return previous
+
+
+@contextmanager
+def pre_normalize_separation(enabled: bool):
+    """Temporarily set the letter separation of :func:`_pre_normalize`; restores it even on error.
+
+    Process-global (not thread-safe): the switch is a module attribute, so concurrent users with
+    different values would race.
+    """
+    previous = set_pre_normalize_separation(enabled)
+    try:
+        yield
+    finally:
+        set_pre_normalize_separation(previous)
+
+
 def _pre_normalize(raw: str) -> str:
     """Uppercase, ASCII-fold, unify separators and `number` words."""
     text = strip_accents(_symbols_to_text(raw)).upper()
@@ -295,7 +371,7 @@ def _pre_normalize(raw: str) -> str:
     text = re.sub(r"[^\w#\-;,. ]+", " ", text)
     text = re.sub(r"\s*-\s*", " - ", text)
     text = re.sub(r"\s+", " ", text).strip()
-    return text
+    return normalize_spacing(text, require_hash=True) if PRE_NORMALIZE_SEPARATES_LETTERS else text
 
 
 def _drop_city_noise(text: str) -> tuple[str, list[str]]:

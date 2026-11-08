@@ -10,6 +10,7 @@ Everything is cached under ``artifacts/`` so notebook runs never redo the work:
 
 from __future__ import annotations
 
+import os
 import random
 import re
 import time
@@ -19,7 +20,7 @@ import pandas as pd
 
 from .augment import corrupt_many
 from .geo import to_metric
-from .model import MAX_LEN, encode_batch
+from .tokenizer import MAX_LEN, encode_batch
 from .parser import _pre_normalize, canonical, parse_address
 
 __all__ = [
@@ -107,9 +108,21 @@ def query_text_for(raw: str) -> tuple[str, str]:
 
 
 def build_training_arrays(
-    docs: pd.DataFrame, n_variants: int = N_VARIANTS, seed: int = SEED, op_scale: dict | None = None
+    docs: pd.DataFrame,
+    n_variants: int = N_VARIANTS,
+    seed: int = SEED,
+    op_scale: dict | None = None,
+    extra_queries: list[tuple[str, int]] | None = None,
 ):
-    """Generate the noisy-variant training set (one query row per variant)."""
+    """Generate the noisy-variant training set (one query row per variant).
+
+    ``extra_queries`` are official ``(text, doc_id)`` pairs (``q_source == 1``) appended AFTER the
+    synthetic block; they consume no randomness, so with ``None`` (or ``[]``) every array is
+    identical to what this function returned before the parameter existed and ``q_source`` is all
+    zeros. Blank texts are skipped; a ``doc_id`` outside ``[0, len(docs))`` raises ``ValueError``
+    (it would silently teach the encoder the wrong document). The validation split is by document,
+    so the official queries of a validation document are validation queries.
+    """
     rng = random.Random(seed)
     canon_list = docs["direccion"].tolist()
     n_docs = len(canon_list)
@@ -127,6 +140,24 @@ def build_training_arrays(
         if doc_id % 50_000 == 0:
             print(f"  augment {doc_id}/{n_docs} ({time.time()-t0:.0f}s)", flush=True)
     print(f"  augmentation done: {len(q_doc)} queries in {time.time()-t0:.0f}s", flush=True)
+
+    n_synthetic = len(q_doc)
+    n_extra = len(extra_queries) if extra_queries else 0
+    for i, (text, doc_id) in enumerate(extra_queries or ()):
+        if isinstance(doc_id, bool) or not 0 <= int(doc_id) < n_docs:
+            raise ValueError(f"extra_queries[{i}] has doc_id {doc_id!r} outside [0, {n_docs})")
+        if text is None or not str(text).strip():
+            continue
+        a, b = query_text_for(str(text))
+        q_canon.append(a)
+        q_prenorm.append(b)
+        q_doc.append(int(doc_id))
+        if (i + 1) % 250_000 == 0:
+            print(f"  official queries {i + 1}/{n_extra} ({time.time()-t0:.0f}s)", flush=True)
+    if n_extra:
+        print(f"  official queries added: {len(q_doc) - n_synthetic} of {n_extra}", flush=True)
+    q_source = np.zeros(len(q_doc), dtype=np.uint8)
+    q_source[n_synthetic:] = 1
 
     q_tokens = encode_batch(q_canon)
     q_tokens_raw = encode_batch(q_prenorm)
@@ -160,6 +191,7 @@ def build_training_arrays(
         "q_tokens_raw": q_tokens_raw,
         "q_doc": q_doc_arr,
         "q_is_val": is_val,
+        "q_source": q_source,
         "d_tokens": d_tokens,
         "doc_comuna": doc_comuna,
         "doc_barrio": doc_barrio,

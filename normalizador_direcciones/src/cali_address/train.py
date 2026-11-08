@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import math
+import os
 import time
 
 import numpy as np
@@ -181,6 +183,44 @@ def _recall_row(prefix: str, metrics: dict | None) -> dict:
     return {f"{prefix}{k}": (None if metrics is None else metrics.get(k)) for k in keys}
 
 
+#: Validation queries per source group are subsampled to this many (seeded) for the split report.
+VAL_SPLIT_SAMPLE = 20_000
+#: ``q_source`` codes written by ``dataset.build_training_arrays``.
+SOURCE_SYNTHETIC, SOURCE_OFFICIAL = 0, 1
+
+
+def _check_q_source(data: dict, n_queries: int) -> np.ndarray | None:
+    """The ``q_source`` array when it is usable, ``None`` when absent; raise when it is misaligned."""
+    q_source = data.get("q_source") if hasattr(data, "get") else None
+    if q_source is None:
+        return None
+    q_source = np.asarray(q_source)
+    if q_source.shape != (n_queries,):
+        raise ValueError(
+            f"q_source has shape {q_source.shape} but there are {n_queries} queries: the arrays are misaligned "
+            "(a subset of the queries must slice q_source too)"
+        )
+    return q_source
+
+
+def _val_split_row(model, q_tokens, q_doc, q_source, val_idx, doc_emb, seed: int, device: str) -> dict:
+    """Validation recall for the official and the synthetic queries SEPARATELY.
+
+    Keys: ``val_{official,synthetic}_recall@{1,5,20}`` (``None`` when that group has no validation query)
+    and ``val_{official,synthetic}_n`` (the full group size). Uses its own generator, so adding this
+    report never changes the training randomness or the overall metrics.
+    """
+    rng = np.random.default_rng(seed)
+    row: dict = {}
+    for label, code in (("official", SOURCE_OFFICIAL), ("synthetic", SOURCE_SYNTHETIC)):
+        idx = val_idx[q_source[val_idx] == code]
+        sub = idx if len(idx) <= VAL_SPLIT_SAMPLE else rng.choice(idx, size=VAL_SPLIT_SAMPLE, replace=False)
+        metrics = recall_at_k(model, q_tokens[sub], q_doc[sub], doc_emb, device=device) if len(sub) else None
+        row[f"val_{label}_n"] = int(len(idx))
+        row.update(_recall_row(f"val_{label}_", metrics))
+    return row
+
+
 def train_model(
     data: dict,
     negatives: np.ndarray,
@@ -200,6 +240,16 @@ def train_model(
       slots is drawn from it instead of the spatial table.
     * ``init_checkpoint`` (``cfg.mode == 'finetune'``): start from an existing
       ``model.pt``; its architecture overrides the architecture fields of ``cfg``.
+
+    Source split: when ``data['q_source']`` marks at least one official query, every ``history`` row also
+    carries ``val_official_*`` / ``val_synthetic_*`` (recall@1/5/20 and ``n``; ``None`` recall for an empty
+    group) and the result has ``final_val_recall`` (``{'official': {...}, 'synthetic': {...}}`` of the last
+    epoch). With ``q_source`` absent or all zeros these keys are OMITTED, so old data directories produce
+    exactly the history they always did. The overall ``recall@k`` mixes both groups and is not comparable
+    across indexes; the split ones are the diagnostics to read.
+
+    Early stop: the result carries ``stopped_early`` (True when the time budget cut the run before the
+    configured epochs were finished), ``epochs_configured`` and ``epochs_completed`` (fully finished epochs).
     """
     cfg.validate()
     device = resolve_device(device)
@@ -237,6 +287,8 @@ def train_model(
     q_tokens_raw = np.ascontiguousarray(data["q_tokens_raw"][:, :L])
     q_doc = data["q_doc"]
     is_val = data["q_is_val"]
+    q_source = _check_q_source(data, len(q_doc))
+    split_report = q_source is not None and bool((q_source == SOURCE_OFFICIAL).any())
     d_tokens = np.ascontiguousarray(data["d_tokens"][:, :L])
     doc_comuna_np = np.asarray(data["doc_comuna"])
 
@@ -282,6 +334,7 @@ def train_model(
     t_start = time.time()
     seqs_seen = 0
     stopped_early = False
+    epochs_completed = 0
 
     def real_val_metrics(doc_emb):
         if real is None or real.n_val == 0:
@@ -300,6 +353,7 @@ def train_model(
         running = {"loss": 0.0, "nce": 0.0, "coord": 0.0, "comuna": 0.0, "barrio": 0.0, "acc": 0.0}
         t_epoch = time.time()
         step = 0
+        done_steps = 0
         for step in range(steps_per_epoch):
             # With real pairs the synthetic slice is B - n_real wide, so an epoch
             # may wrap around `order`; the modulo keeps the slice full.
@@ -372,6 +426,7 @@ def train_model(
             torch.nn.utils.clip_grad_norm_(trainable, cfg.grad_clip)
             opt.step()
             sched.step()
+            done_steps += 1
 
             seqs_seen += len(pos) + len(uniq)
             running["loss"] += loss.item()
@@ -408,6 +463,10 @@ def train_model(
             model, q_tokens[train_sub], q_doc[train_sub], doc_emb, ks=(1,), device=device
         )
         metrics_real = real_val_metrics(doc_emb)
+        split_row = (
+            _val_split_row(model, q_tokens, q_doc, q_source, val_idx, doc_emb, cfg.seed + 1_000_003 + epoch, device)
+            if split_report else {}
+        )
         del doc_emb
         torch.cuda.empty_cache()
 
@@ -427,8 +486,11 @@ def train_model(
             "gpu_mem_gb": torch.cuda.max_memory_allocated() / 1e9 if device == "cuda" else 0.0,
             **metrics,
             **_recall_row("real_val_", metrics_real),
+            **split_row,
         }
         history.append(row)
+        if done_steps >= steps_per_epoch:
+            epochs_completed += 1
         print(json.dumps(row), flush=True)
         if stopped_early:
             break
@@ -444,7 +506,7 @@ def train_model(
             "bf16_supported": torch.cuda.is_bf16_supported(),
             "cudnn": torch.backends.cudnn.is_available(),
         }
-    return {
+    result = {
         "model": model,
         "history": history,
         "seconds": seconds,
@@ -456,4 +518,14 @@ def train_model(
         "real_stats": (real.stats if real is not None else None),
         "steps_per_epoch": steps_per_epoch,
         "batch_split": {"synthetic": n_syn, "real": n_real},
+        "stopped_early": bool(stopped_early and epochs_completed < cfg.epochs),
+        "epochs_configured": int(cfg.epochs),
+        "epochs_completed": int(epochs_completed),
     }
+    if split_report and history:
+        last = history[-1]
+        result["final_val_recall"] = {
+            label: {"n": last[f"val_{label}_n"], **{k: last[f"val_{label}_{k}"] for k in ("recall@1", "recall@5", "recall@20")}}
+            for label in ("official", "synthetic")
+        }
+    return result

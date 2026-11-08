@@ -7,6 +7,7 @@ import os
 import sys
 import time
 
+import numpy as np
 import pandas as pd
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -19,7 +20,7 @@ from cali_address.evaluate import (  # noqa: E402
     via_type_confusion,
 )
 from cali_address.geo import ParcelIndex  # noqa: E402
-from cali_address.inference import AddressNormalizer  # noqa: E402
+from cali_address.inference import CONFIDENCE_THRESHOLD, AddressNormalizer  # noqa: E402
 from cali_address.parser import canonical, parse_address  # noqa: E402
 
 pd.set_option("display.width", 220)
