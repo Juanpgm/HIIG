@@ -1,225 +1,231 @@
-# Normalizador de direcciones de Cali
+# cali-address
 
-Sistema que convierte direcciones escritas como texto libre (`Cl. 5 # 34-12`, `Calle 5ta No 34 12`, `Cll 5 34 12`) en una referencia catastral de Santiago de Cali: dirección normalizada, Número Predial Nacional (NPN), manzana, coordenada del predio, barrio y comuna, con un estado explícito y un nivel de precisión por fila.
+Match free-text addresses from **any tabular dataset** (CSV, Excel, Parquet, JSON, GeoJSON, shapefile, SQL, ...)
+against the Cali (Colombia) cadastre and get back the predial number, block (manzana), barrio and comuna,
+with an explicit status and a precision level per row. A character-level Transformer retrieves candidates,
+then structural and geographic rules decide. Your original columns are kept; the result columns are appended.
 
-Un codificador Transformer a nivel de carácter (3 375 601 parámetros) recupera candidatos entre las direcciones del catastro; luego reglas estructurales y geográficas deciden si se acepta alguno. Cuando no hay una coincidencia aceptable, el sistema se abstiene en lugar de adivinar.
+## Scope
 
-> **Estado: versión preliminar probada con datos de Cali.** No se ha medido fuera de Cali ni con fuentes distintas de las de la evaluación original. Lea [Advertencias de confiabilidad](#advertencias-de-confiabilidad) antes de usar los resultados.
+- It normalizes addresses **in Santiago de Cali only**. The reference catalog is the Cali cadastre
+  (330,387 addresses) and the model is trained on its grammar. Addresses from another city would be matched
+  against Cali predios, which is wrong: another city needs its own reference catalog, gazetteer and a
+  retrained model.
+- The input dataset can be anything; column mapping and format handling are the flexible part
+  ([docs/any-dataset.md](docs/any-dataset.md)).
 
-## Contenido
+## Quickstart (3 steps)
 
-1. [Alcance](#alcance)
-2. [Qué se publica y qué no](#qué-se-publica-y-qué-no)
-3. [Inicio rápido](#inicio-rápido)
-4. [Columnas de salida, niveles de posición y reglas](#columnas-de-salida-niveles-de-posición-y-reglas)
-5. [Advertencias de confiabilidad](#advertencias-de-confiabilidad)
-6. [Requisitos resumidos](#requisitos-resumidos)
-7. [Índice de documentación](#índice-de-documentación)
-8. [Pruebas](#pruebas)
-9. [Estructura del repositorio](#estructura-del-repositorio)
-10. [Licencias y datos de terceros](#licencias-y-datos-de-terceros)
-11. [Licencia](#licencia)
-
-## Alcance
-
-- Normaliza direcciones **solo de Santiago de Cali**. El catálogo de referencia es el catastro urbano de Cali (330 387 direcciones únicas) y el modelo se entrenó con su gramática. Una dirección de otra ciudad se compararía con predios de Cali, lo cual es incorrecto.
-- La entrada puede ser cualquier tabla (CSV, Excel, Parquet, JSON, GeoJSON, shapefile, SQL, ...). Se conservan las columnas originales y se añaden las de resultado.
-- Interfaces: línea de comandos (`cali-address`), API HTTP (FastAPI), página de carga local y endpoints con forma Esri (no es un Locator certificado).
-
-## Qué se publica y qué no
-
-| Se publica | No se publica |
-|------------|---------------|
-| Código (`src/`, `scripts/`, `deploy/`, `Dockerfile`, `railway.toml`) | Índice catastral (`catastro_docs.parquet`, `catastro_own_centroids.parquet`) |
-| Pesos entrenados del codificador: `artifacts/model.pt` (unos 13 MB) | Embeddings (`catastro_emb.pt`, 169 MB) |
-| Configuración calibrada: `artifacts/tuning.json`, `artifacts/reliability.json`, `artifacts/reliability_v2.json` (solo coeficientes y metadatos) | Mapas base (polígonos de la infraestructura de datos municipal) |
-| Pruebas automáticas (`tests/`, con direcciones sintéticas) y la guardia de publicación (`scripts/check_publishable.py`) | Datos de entrenamiento, evaluación y prueba, y resultados de ejecución (`strict_eval_*`, `eval_calibration.csv`, `artifacts/experiments/`, reportes de entrenamiento) |
-| Documentación (`documentacion/` y `docs/`) | Contextos privados (registros con datos personales) y cachés regenerables (`interp_index_v1.*`, `catalog_keys_v1.*`, `gazetteer.pkl`) |
-
-**Consecuencia: para predecir, el usuario debe construir el índice con su propio catastro de Cali** (instrucciones en [documentacion/05-uso-e-implementacion.md](documentacion/05-uso-e-implementacion.md), sección 1). El `model.pt` publicado es específico de Cali y no es adecuado para el catastro de otra ciudad ([documentacion/10-estandar-y-generalizacion.md](documentacion/10-estandar-y-generalizacion.md), sección 5). Detalle y motivos en [documentacion/07-requisitos.md](documentacion/07-requisitos.md), sección 5.
-
-Seguridad: `model.pt` se carga con `torch.load(weights_only=False)` y el caché del gazetteer con `pickle`; ambos mecanismos pueden ejecutar código si el archivo está manipulado. Cargue solo artefactos de confianza y verifique su SHA-256 ([documentacion/05-uso-e-implementacion.md](documentacion/05-uso-e-implementacion.md), sección 9).
-
-## Inicio rápido
-
-Requiere Python 3.11 o superior.
+Python 3.11+ and a git clone of this repository. Works the same in PowerShell and Git Bash.
 
 ```bash
-# 1. Instalar (torch de CPU primero, para evitar la versión CUDA de unos 3 GB)
+# 1. Install (CPU-only torch first, so pip does not pick the ~3 GB CUDA build)
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -e ".[api,excel]"
-```
 
-```python
-# 2. Construir el índice con su catastro de Cali (esquema de columnas en documentacion/04-entrenamiento.md, sección 2.1)
-import sys
-sys.path.insert(0, "src")
-import pandas as pd
-from cali_address.dataset import build_docs, own_centroid_table
-
-catastro = pd.read_parquet("artifacts/catastro.parquet")   # su tabla catastral
-docs = build_docs(catastro)
-docs.to_parquet("artifacts/catastro_docs.parquet", index=False)
-own_centroid_table(docs, catastro).to_parquet("artifacts/catastro_own_centroids.parquet", index=False)
-```
-
-```bash
-# 3. Regenerar catastro_emb.pt (no se versiona; rápido en GPU, más lento en CPU) y autoverificar
+# 2. Make the repository runnable: checks the model files and regenerates catastro_emb.pt (not in git)
 cali-address setup
 
-# 4. Normalizar un archivo (escribe datos_normalizado.xlsx junto a la entrada)
-cali-address normalize datos.xlsx
+# 3. Normalize a file: writes direcciones_normalizado.xlsx next to it (same format as the input)
+cali-address normalize direcciones.xlsx
 ```
 
-Opciones útiles:
+Optional: `cali-address web` serves an upload page at http://127.0.0.1:8000 and opens your browser
+(`--port`, `--no-browser`; needs the `api` extra). If the `cali-address` command is not on your PATH
+(common on Windows), use `python -m cali_address setup`, `python -m cali_address normalize ...` instead.
+
+`setup` takes seconds on an NVIDIA GPU and about 3-10 minutes on a CPU, once. It is safe to re-run
+("Already set up"); `--force` regenerates the embeddings. It finishes by normalizing 3 invented addresses
+and printing `Setup OK`. If the GPU build of torch is installed, `setup` uses it automatically
+(`--device cpu` to override).
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| `model artifacts not found` / exit code 3 | Run `cali-address setup`. If it says `model.pt` or `catastro_docs.parquet` is missing, run `git pull` (they are tracked in git) or see [docs/model-artifacts.md](docs/model-artifacts.md). |
+| `several columns could be the address` / `no address column` | Run `cali-address inspect FILE`, then `--address-col NAME` (or `--address-parts A,B,C`). |
+| The header is not on the first row | `--header-row N` (0-based; detected automatically when omitted). |
+| The Excel file is huge or slow | Save it as CSV: CSV streams, Excel is read through openpyxl. |
+| `the web page needs the "api" extra` | `pip install -e ".[api]"`. |
+| `cannot listen on 127.0.0.1:8000` | Another program uses the port: `cali-address web --port 8001`. |
+| The output file already exists | It is replaced atomically (never left half written). The input file is never overwritten. |
+
+Without `-o`, `normalize` writes `<input name>_normalizado<ext>` next to the input: same format for
+csv, tsv, xlsx, parquet, json and geojson; `.xls` becomes `.xlsx`, `.txt` becomes `.csv`, shapefile,
+zip and GeoPackage become `.geojson`. URL and database inputs need `-o`.
+
+Deploying somewhere else (Docker, Railway): see [README_DEPLOY.md](README_DEPLOY.md) (Spanish). The image
+copies a curated `deploy/artifacts/` that already contains `catastro_emb.pt`; `setup` regenerates that
+file (details in [docs/model-artifacts.md](docs/model-artifacts.md)).
+
+## Install (all options)
+
+Python 3.11+. Install CPU-only torch first, so pip does not pick the ~3 GB CUDA build:
 
 ```bash
-cali-address inspect datos.csv                       # ver columnas y la columna de dirección sugerida
-cali-address normalize datos.csv -o salida.csv --dry-run 20     # vista previa sin escribir
-cali-address web                                     # página de carga en http://127.0.0.1:8000
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install -e .                    # core: the cali-address command
+pip install -e ".[excel,sql,geo]"   # optional input/output formats
+pip install -e ".[api]"             # HTTP API
+pip install -e ".[dev,api,sql,excel,geo]"   # tests (what CI runs)
+pip install -e ".[all]"             # everything except dev
 ```
 
-Si el comando `cali-address` no está en su `PATH`, use `python -m cali_address ...`. Los límites geográficos (`basemaps/`) son opcionales: sin ellos el sistema funciona, pero sin detección de barrio ni comuna en el texto ni puerta geográfica.
+| Extra | Adds |
+|-------|------|
+| `excel` | `.xlsx` output and `.xls` input (openpyxl, xlrd) |
+| `sql` | SQL sources (SQLAlchemy; you also need the database driver) |
+| `geo` | GeoPackage input (geopandas, pyogrio) |
+| `api` | FastAPI service (fastapi, uvicorn, python-multipart) |
+| `train` | training / evaluation scripts under `scripts/` |
+| `dev` | pytest, httpx, scikit-learn, ruff |
 
-## Columnas de salida, niveles de posición y reglas
+### Model artifacts (not in the wheel)
 
-Versión del paquete: **0.2.0** (`cali_address.__version__`, `pyproject.toml` y la API informan la misma). Se conservan las columnas originales y se añaden: `direccion_entrada`, `estado`, `motivo`, `direccion_normalizada`, `fuente_normalizacion`, `numero_predial_nacional`, `manzana`, `lat`, `lon`, `confianza`, `confiabilidad`, `confiabilidad_manzana`, `margen`, `nivel_precision`, `barrio_vereda`, `comuna_corregimiento`, `complemento_normalizado` y, **al final**, las diez columnas de posición, fidelidad y catálogo:
+The wheel contains code only. The normalizer needs `model.pt`, `catastro_emb.pt` and `catastro_docs.parquet`
+(plus optional `tuning.json`, `reliability.json`, `gazetteer.pkl`). Point the CLI at them with
+`--artifacts-dir` or the `CALI_ARTIFACTS_DIR` environment variable. In a git clone, everything except
+`catastro_emb.pt` (161 MB, above the GitHub file-size limit) is tracked in `artifacts/`; regenerate the
+embeddings with `cali-address setup` (or by following [docs/model-artifacts.md](docs/model-artifacts.md)). Without them, `normalize` exits
+with code 3 and lists the missing files.
 
-| Columna | Qué indica |
-|---------|------------|
-| `position_tier` | Qué tan bien ubicada quedó la fila: `predio`, `lote`, `tramo`, `manzana`, `via` o `none`. |
-| `position_radius_m` | Radio de error geométrico del nivel, en metros (p90 derivado del catastro, sin GPS). |
-| `position_source` | Origen de la coordenada: `parcel`, `interp` o `none`. |
-| `selected_doc_id` | Documento catastral elegido (auditoría). |
-| `override_rejected` | `True` si el candidato se rechazó por las reglas estructurales. |
-| `direccion_catastral` | Dirección del predio coincidente tal como la escribe el catastro (solo filas `OK`). |
-| `fidelity_risk`, `fidelity_flags` | Riesgo (`none`, `low`, `medium`, `high`) de que la dirección devuelta sea **otra** que la recibida, y las banderas que lo explican. |
-| `catalog_status`, `address_verified` | `verified`, `ambiguous`, `door_not_catalogued`, `rejected_mismatch`, `unparsed` o `below_cutoff`; `address_verified` es `True` solo para `verified`. |
-
-**Niveles de posición y radios geométricos** (derivados del propio catastro; no miden acierto frente a la realidad de campo):
-
-| `position_tier` | Radio | Coordenada | Predial |
-|-----------------|------:|------------|---------|
-| `predio` | 15 m | Centroide del predio | Se conserva |
-| `lote` | 44 m | Centroide del lote (una unidad de sitio difiere del catastro) | Retenido |
-| `tramo` | 15 a 23 m | Interpolada entre predios vecinos del mismo costado (placa a 1 o 2 unidades, letras o `BIS` distintos) | Retenido |
-| `manzana` | 56 m | Punto del mejor candidato (letra o cuadrante en un solo lado, dirección compartida) | Se conserva, salvo letra o cuadrante en un solo lado |
-| `via` | 21 m | **Retenida** por defecto (`EXTRAPOLATED_COORDS_ENABLED = False`): placa más allá del último predio, parse truncado o fidelidad alta | Retenido (también la manzana) |
-| `none` | - | - | - |
-
-**Dirección en blanco.** `direccion_normalizada` (y `fuente_normalizacion`) queda `null` cuando el texto no es confiable: filas `unparsed`; filas `below_cutoff` o `rejected_mismatch` con un análisis inseguro (solo se emite con fidelidad `none` o `low` y parse completo); y **toda** fila con `fidelity_risk = high`, también las `OK`. La canalización de archivos recurre entonces al texto original.
-
-**Medida de fidelidad.** Compara la entrada original con la dirección devuelta usando un tokenizador independiente del analizador de producción. Lo inofensivo (abreviaturas, mayúsculas, tildes, `No.` a `#`, `N` a `NORTE` en el mismo segmento) no cuenta; sí cuentan los números de puerta, las letras pegadas a ellos, el tipo de vía y el cuadrante (su posición es significativa). `high` limita la fila a `via` y la deja sin dirección; `medium`, a `manzana` sin predial.
-
-**Reglas de la guarda estructural.** El cuadrante se compara **por posición** (vía, cruce, final): un cuadrante movido de posición se rechaza. `N` equivale a `NORTE` solo dentro del mismo segmento. **Una placa distinta nunca es una puerta verificada** (como máximo `tramo`). Un sufijo numérico en un solo lado (`KR 26 H` frente a `KR 26 H 3`) se rechaza con `regla: sufijo unilateral`.
-
-**Cachés perezosas (no se versionan).** `artifacts/interp_index_v1.pkl` + `.json` (índice de interpolación, ~8 MB) y `artifacts/catalog_keys_v1.pkl` + `.json` (claves exactas del catastro, ~6 MB) se construyen la primera vez que se usan y se verifican por hash antes de leerlas. Para construirlas de antemano: `python deploy/prepare_artifacts.py` (`--no-warm` las omite).
-
-**Confiabilidad y artefactos.** `artifacts/reliability.json` (v4) es el calibrador que se sirve; `artifacts/reliability_v2.json` (v5, ajustado solo con etiquetas consistentes con el texto) no se sirve por defecto y cambia la escala. **Las bandas de confiabilidad no están validadas**: ni la escala operativa ni los cortes se han medido fuera de Cali ni con otras fuentes ([documentacion/08-metricas-y-confiabilidad.md](documentacion/08-metricas-y-confiabilidad.md), [documentacion/09-advertencias-y-limitaciones.md](documentacion/09-advertencias-y-limitaciones.md)). `catastro_emb.pt` no se versiona: `cali-address setup` lo regenera en CPU.
-
-Detalle campo por campo en [documentacion/06-predicciones.md](documentacion/06-predicciones.md), sección 10, y en [docs/API.md](docs/API.md).
-
-## Advertencias de confiabilidad
-
-Resumen; la definición de las métricas, el protocolo y los comandos para reproducirlas localmente están en [documentacion/08-metricas-y-confiabilidad.md](documentacion/08-metricas-y-confiabilidad.md) y las advertencias en [documentacion/09-advertencias-y-limitaciones.md](documentacion/09-advertencias-y-limitaciones.md). Los resultados de las corridas no se publican.
-
-- **El resultado es una propuesta, no una verdad.** Solo una parte de las filas reales llega a `OK`, y de esas no todas aciertan la manzana ni el predio, medido contra una referencia por GPS que es ruidosa. El subconjunto cuya dirección escrita coincide con la del predio de referencia ("gold") da una cota optimista porque se elige por coincidencia textual.
-- **`confianza` no es una probabilidad.** Una `confianza` alta no implica que el predio sea exacto.
-- **La `confiabilidad` que se sirve (v4, `reliability.json`) casi no distingue filas correctas de incorrectas** y su escala no está calibrada: se ajustó con etiquetas GPS ruidosas. Hay un calibrador alternativo (v5, `reliability_v2.json`), ajustado solo con etiquetas consistentes con el texto; no se sirve por defecto, usa otra escala y no mejora la manzana. Verifique cualquier calibrador con su propia muestra (ver [documentacion/08-metricas-y-confiabilidad.md](documentacion/08-metricas-y-confiabilidad.md), sección 4).
-- **Las métricas de una corrida dependen de la versión del código**; una auditoría posterior cambió reglas de decisión, así que mida de nuevo con el código vigente.
-- **Las bandas de confiabilidad no están validadas** y los radios de posición son geométricos (derivados del catastro), no una medida de acierto.
-- **No hay medición fuera de Cali**, en zona rural, ni con otras fuentes de texto.
-- **No use el resultado sin verificación humana en decisiones jurídicas, catastrales o tributarias.**
-- Escala operativa sugerida (aceptable con muestreo, revisión humana, rechazo): [documentacion/08-metricas-y-confiabilidad.md](documentacion/08-metricas-y-confiabilidad.md), sección 5.
-
-## Validación con JEV (opcional)
-
-Juez semántico externo e independiente. **Envía cadenas de dirección a un servicio de terceros**, por lo que su uso es una decisión explícita de quien lo ejecuta; consulte [`validacion_jev/README.md`](../validacion_jev/README.md) antes de usarlo.
-
-## Requisitos resumidos
-
-Tablas completas en [documentacion/07-requisitos.md](documentacion/07-requisitos.md).
-
-### Requisitos para entrenamiento
-
-| Categoría | Requisito |
-|-----------|-----------|
-| Software | Python 3.11 o superior; torch con CUDA; extra `train` (`scikit-learn`, `requests`, etc.) |
-| Hardware | GPU NVIDIA con bf16; el pico de memoria de GPU depende del tamaño de lote (ver [documentacion/04-entrenamiento.md](documentacion/04-entrenamiento.md)) |
-| Tiempo | Depende de la GPU; el presupuesto por defecto es `MAX_MINUTES` (24) |
-| Datos | Tabla catastral cruda: `OBJECTID`, `numero_predial_nacional` (30 dígitos), `numero_predial_manzana`, `direccion`, `centroid_lon`, `centroid_lat` |
-| Datos privados | Ninguno para entrenar ni para ajustar pesos y umbral; solo hacen falta filas reales con referencia para ajustar la confiabilidad |
-| CRS | Centroides en EPSG:4326; cálculo métrico en EPSG:3116 |
-
-### Requisitos para predicción
-
-| Categoría | Requisito |
-|-----------|-----------|
-| Software | Python 3.11 o superior; torch de CPU; extras según uso (`api`, `excel`, `sql`, `geo`) |
-| Hardware | CPU; al menos 2 GB de RAM por instancia (un límite de 1 GB o menos no alcanza) |
-| Artefactos publicados | `model.pt`, `tuning.json`, `reliability.json` |
-| Artefactos que debe generar | `catastro_docs.parquet`, `catastro_own_centroids.parquet`, `catastro_emb.pt` (con `cali-address setup`); opcionalmente `basemaps/` |
-| Límites | API: `MAX_ROWS` 20 000 filas y `MAX_UPLOAD_MB` 25 por petición |
-| Cobertura | Santiago de Cali, zona urbana |
-
-## Índice de documentación
-
-Toda la documentación nueva está en [documentacion/](documentacion/README.md), en español. Los documentos originales del proyecto están en `docs/`.
-
-| Documento | Contenido |
-|-----------|-----------|
-| [01-teoria.md](documentacion/01-teoria.md) | Recuperación con codificador dual, InfoNCE, nivel de carácter, corrupción sintética, negativos duros, fusión, reglas y confiabilidad |
-| [02-arquitectura.md](documentacion/02-arquitectura.md) | Módulos, diagramas de la red, formas de tensor, datos de entrenamiento, flujo de inferencia y despliegue |
-| [03-configuracion.md](documentacion/03-configuracion.md) | Variables de entorno, opciones de la CLI, archivos de configuración, Docker y Railway |
-| [04-entrenamiento.md](documentacion/04-entrenamiento.md) | Receta paso a paso, esquemas de datos, hiperparámetros, tiempos, ajuste de umbral y confiabilidad |
-| [05-uso-e-implementacion.md](documentacion/05-uso-e-implementacion.md) | Instalación, CLI, API, formatos, despliegue, Esri y seguridad |
-| [06-predicciones.md](documentacion/06-predicciones.md) | Entradas, columnas de salida, valores de `estado` y `motivo`, guía de interpretación |
-| [07-requisitos.md](documentacion/07-requisitos.md) | Requisitos de entrenamiento y de predicción, esquemas, artefactos y política de publicación |
-| [08-metricas-y-confiabilidad.md](documentacion/08-metricas-y-confiabilidad.md) | Definición de métricas, protocolo, cómo reproducirlas y escala operativa |
-| [09-advertencias-y-limitaciones.md](documentacion/09-advertencias-y-limitaciones.md) | Advertencias numeradas, elementos específicos de Cali e inconsistencias |
-| [10-estandar-y-generalizacion.md](documentacion/10-estandar-y-generalizacion.md) | Conformidad con el estándar nacional y cómo adaptar a otros territorios |
-
-## Pruebas
+## 60-second quickstart
 
 ```bash
-pip install -e ".[dev,api,sql,excel]"
+cali-address formats                       # supported input / output formats
+cali-address inspect data.csv              # format, header, columns, guessed address column, preview
+
+cali-address normalize data.csv -o out.csv
+cali-address normalize data.csv -o out.csv --dry-run 20          # preview 20 rows, write nothing
+
+# Excel with the header on row 3 (0-based --header-row), a specific sheet
+cali-address normalize report.xlsx -o out.xlsx --sheet Inspections --header-row 2
+
+# Address split across several columns
+cali-address normalize data.csv -o out.csv --address-parts via,numero,complemento
+
+# SQL source (SQLAlchemy URL): --table takes a table or a VIEW (for joins or filters, create a view in the
+# database). The session is read-only where the driver supports it (SQLite, PostgreSQL via psycopg2/psycopg/
+# pg8000) and rolled back; still use a read-only database account. See docs/any-dataset.md.
+cali-address normalize sqlite:///local.db -o out.parquet --table direcciones
+cali-address normalize postgresql://user:pw@host/db -o out.csv \
+    --table public.predios_cali --address-parts via,numero
+
+# Same options from a TOML file (command line flags override it)
+cali-address normalize --config run.toml
+```
+
+`run.toml`:
+
+```toml
+input = "reporte.xlsx"
+output = "salida.csv"
+sheet = "Inspecciones"
+header_row = 2
+address_parts = ["via", "numero", "complemento"]
+id_col = "id"
+chunk_size = 5000
+
+[tunables]
+min_struct = 0.6
+ambiguity_delta = 0.02
+```
+
+`python -m cali_address ...` is equivalent. Exit codes: `0` ok, `1` aborted (`--on-error raise` or out of
+memory), `2` usage / mapping / config error, `3` I/O error (including missing artifacts), `4` every row
+failed (output and summary are still written), `130` interrupted. Notes: an existing output file is overwritten; relative
+paths inside a `--config` file are relative to that file; the CLI reads `CALI_ARTIFACTS_DIR` while the API
+and Docker use `ARTIFACTS_DIR`; `--artifacts-dir` must be trusted (`model.pt` is loaded with
+`torch.load(weights_only=False)`). Details: [docs/any-dataset.md](docs/any-dataset.md).
+
+## Output columns
+
+Your columns first, then: `direccion_entrada`, `estado`, `motivo`, `direccion_normalizada`,
+`fuente_normalizacion`, `numero_predial_nacional`, `manzana`, `lat`, `lon`, `confianza`, `confiabilidad`,
+`confiabilidad_manzana`, `margen`, `nivel_precision`, `barrio_vereda`, `comuna_corregimiento`,
+`complemento_normalizado` (the unit part of `direccion_normalizada`, e.g. `TO F AP 101`, taken from the input
+and identical on OK and non-OK rows even when the cadastre spells the unit differently; free text is dropped;
+barrio/vereda/corregimiento are recognised but not emitted; multi-part values stay whole in one spelling,
+`APTO 3 02` -> `AP 3-02`, `APTO 101 A` -> `AP 101A`, `TORRE F-2` -> `TO F2`; not exposed by the ESRI endpoint).
+The full data dictionary is in [docs/any-dataset.md](docs/any-dataset.md).
+
+- **`estado`**: `OK` (matched a predio), `SIN_MATCH` (parsed, no acceptable match), `NO_PARSEABLE`
+  (not an address), plus `FUERA_DE_AREA` (municipality other than Cali) and `ERROR` (that row failed; the run continues).
+- **`nivel_precision`** (OK rows): `predio` (street, cross and plate confirmed by the text), `via` (no cross number),
+  `esquina` (no plate, **or** a street letter on one side only: two different situations with the same level, so
+  read `motivo` to tell them apart), `manzana` (approximate: plate off by 1-2, a quadrant
+  on one side only, or shared by several predios in one block), `direccion` (shared across blocks, or null NPN).
+  Rows degrade to the level that is true instead of claiming a predio.
+- **`confiabilidad`**: calibrated probability that the predio is right (`confiabilidad_manzana` for the block).
+- **`lat` / `lon`**: the centroid of the parcel whose NPN is reported when the serving artifacts carry
+  `catastro_own_centroids.parquet` (built by `scripts/build_own_centroids.py`, shipped in the Docker image) or
+  `catastro.parquet`. Without both, a shared address (several predios) gets the centroid of the **address** (the median of
+  its parcels) and `motivo` says `coordenada: centroide de la direccion compartida por N predios`.
+- **A trustworthy NPN** (measured on 26,287 real rows, CLI configuration): keep rows with
+  `estado == "OK"`, `nivel_precision == "predio"` and `confiabilidad >= 0.58`. Against the SIG reports layer it keeps 87.4 %
+  of the OK rows with 94.1 % in the same lot and 1.20 % more than 100 m away (all OK rows: 90.1 % and 2.3 %); against field
+  GPS 85.2 %, 61.0 % and 3.28 % (all OK: 58.7 % and 5.1 %; GPS lands on the facade, so read 61 % as a floor). Do not raise
+  `confiabilidad` above ~0.62: it is not monotonic.
+- **Known cost of the hard suffix rule**: `KR 26 H` vs `KR 26 H 3` is rejected (`regla: sufijo unilateral` in `motivo`);
+  24 of the 79 gold rows rejected that way were the right lot. Filter on that token to review them.
+- **Parser limits**: a second address typed after a unit with no comma or semicolon (`CL 5 # 38-10 TORRE B KR 6 # 4-3`)
+  stays in `complement_text` (units are still read only from recognised kinds); a tower typed before the address
+  (`Torre B, Calle 5 # 38-10`) is still not parseable.
+
+### How far to trust it
+
+Measured on the frozen test split (2,000 rows, see [docs/model-artifacts.md](docs/model-artifacts.md)
+and [docs/splits.md](docs/splits.md)), production configuration:
+
+- Predio precision on **text-consistent "gold" rows: about 0.93** (0.927).
+- Manzana precision on **all rows: about 0.69** (0.694). It is low mostly because the ground truth is a GPS
+  point-in-polygon lookup and neighbouring parcels are ~6 m apart, so many labels are noisy, not because
+  the matches are wrong.
+- Coordinates (yours or the predio centroid) are never a correctness criterion; judge a match by manzana / predial
+  and the matched address text.
+- `confiabilidad` is only **weakly informative**: it tends to underestimate the real probability and
+  discriminates little among OK rows. Use `estado` and `nivel_precision` first.
+
+## HTTP API, Docker, Railway
+
+The FastAPI service (`uvicorn cali_address.api.main:app`, extra `api`) is documented in
+[docs/API.md](docs/API.md) (Spanish). The `Dockerfile` and `railway.toml` build the serving image; the
+deployment guide is [README_DEPLOY.md](README_DEPLOY.md) (Spanish).
+
+## Testing
+
+```bash
+pip install -e ".[dev,api,sql,excel,geo]"
 python -m pytest -q
 ```
 
-Las pruebas usan modelos de juguete y direcciones **sintéticas**. Las marcadas `requires_artifacts` necesitan los artefactos reales de servicio (`model.pt`, `catastro_emb.pt`, `catastro_docs.parquet`) y se omiten si faltan; en un clon limpio faltan `catastro_emb.pt` y el índice catastral, de modo que esas pruebas se omiten hasta que se construyan (ver [Inicio rápido](#inicio-rápido)).
+Tests that need the real serving artifacts are marked `requires_artifacts` and are skipped when
+`catastro_emb.pt` is absent (as in CI). Everything else runs against stub models.
 
-## Estructura del repositorio
+## Project layout
 
-| Ruta | Contenido |
-|------|-----------|
-| `src/cali_address/` | Paquete: analizador, modelo, inferencia, gazetteer, capa de decisión (`service`), `io/`, `cli.py`, `api/` |
-| `scripts/` | Preparación de datos, entrenamiento, ajuste, evaluación, partición de datos, ajuste de confiabilidad y el escáner local de direcciones reales (`check_no_real_addresses.py`) |
-| `tests/` | Suite de pytest con datos sintéticos |
-| `artifacts/` | `model.pt`, `tuning.json`, `reliability.json`, `reliability_v2.json` y `catastro_meta.json` |
-| `deploy/` | `prepare_artifacts.py`, que reúne los archivos de servicio para la imagen |
-| `docs/` | Documentos originales del proyecto (API, integración Esri, despliegue, artefactos, experimentos, particiones) |
-| `documentacion/` | Documentación completa en español (esta serie) |
-| `Dockerfile`, `railway.toml`, `.dockerignore`, `.railwayignore` | Despliegue |
-| `pyproject.toml`, `requirements.txt`, `uv.lock` | Dependencias |
-| `CHANGELOG.md` | Registro de cambios |
+| Path | Contents |
+|------|----------|
+| `src/cali_address/` | the package: parser, model, inference, gazetteer, `service` (decision layer), `tables` and `io/` (readers, writers, pipeline), `cli.py`, `api/` |
+| `scripts/` | training, tuning, evaluation, split building, reliability fitting (need a checkout) |
+| `tests/` | pytest suite |
+| `docs/` | [any-dataset](docs/any-dataset.md), [model-artifacts](docs/model-artifacts.md), [experiments](docs/experiments.md), [splits](docs/splits.md), [contributing](docs/contributing.md), API |
+| `artifacts/` | model, config and cadastre index (see `docs/model-artifacts.md` for what is tracked) |
+| `basemaps/` | public IDESC boundaries used by the gazetteer |
+| `deploy/` | helper to assemble the serving artifacts for the image |
+| `context/`, `outputs/` | **private**, gitignored (see below) |
 
-## Licencias y datos de terceros
+## Privacy
 
-- **Licencia del código.** El código, las pruebas y la documentación se distribuyen bajo la licencia [Apache-2.0](../LICENSE) (ver también [NOTICE](../NOTICE)). La licencia no cubre datos de terceros ni, necesariamente, los pesos entrenados `artifacts/model.pt` (ver el punto siguiente y el `NOTICE`).
-- **Datos de terceros que no se redistribuyen.** La capa catastral de Cali y los mapas base municipales (barrios, veredas, comunas y corregimientos) son datos de terceros y **no forman parte de este repositorio**. Cada usuario debe verificar los términos de uso y de redistribución de las fuentes que emplee antes de descargarlas, derivar productos de ellas o publicarlas.
-- **Pesos entrenados.** `artifacts/model.pt` se entrenó con ruido sintético derivado de un catastro (no contiene filas del catastro). Aun así, su uso y redistribución dependen de los términos de la fuente catastral de la que deriva.
-- **Cómo obtener los archivos que no se publican.** Genérelos localmente; el `.gitignore` ya los excluye (`*.parquet`, `*.pt` salvo `model.pt`, `*.geojson`, `basemaps/`) y no deben incorporarse al repositorio con `git add -f`:
+`context/` (real citizen data: insured-property registry, disaster-victim registry with names and ID numbers,
+inspection reports), `outputs/` and `artifacts/splits/` (raw evaluation addresses) are private and gitignored.
+Never commit or ship them, and never build them into a Docker image (`.dockerignore` and `.railwayignore` exclude them).
 
-| Archivo | Cómo se obtiene |
-|---------|-----------------|
-| `artifacts/catastro.parquet` | `python scripts/download_catastro.py` (descarga paginada y reanudable de la capa catastral; requiere la variable de entorno `CALI_CATASTRO_URL` con una fuente que usted esté autorizado a consultar, sin valor por defecto; verifique antes los términos del servicio) |
-| `artifacts/catastro_docs.parquet` | `cali_address.dataset.build_docs` (paso 2 del inicio rápido) |
-| `artifacts/catastro_own_centroids.parquet` | `own_centroid_table` (paso 2 del inicio rápido) o `python scripts/build_own_centroids.py` |
-| `artifacts/catastro_emb.pt` | `cali-address setup` (regenera los embeddings a partir de `model.pt` y del índice) |
-| `basemaps/barrios_veredas.geojson`, `basemaps/comunas_corregimientos.geojson` | No hay script: descárguelos del portal de datos abiertos o del geoportal municipal y guárdelos con esos nombres. Son opcionales; sin ellos no hay detección de barrio ni comuna en el texto |
+## Changelog
 
-- **Seguridad: deserialización.** `model.pt` se carga con `torch.load(..., weights_only=False)` y el caché del gazetteer (`gazetteer.pkl`) con `pickle`; ambos mecanismos pueden ejecutar código arbitrario si el archivo está manipulado. Cargue únicamente artefactos de origen confiable y compare su SHA-256 antes de usarlos ([documentacion/09-advertencias-y-limitaciones.md](documentacion/09-advertencias-y-limitaciones.md), advertencia 11).
+See [CHANGELOG.md](CHANGELOG.md).
 
-## Licencia
+## License
 
-Apache License 2.0 para el código y la documentación. Ver [LICENSE](../LICENSE) y [NOTICE](../NOTICE) en la raíz del repositorio: el `NOTICE` precisa que los datos de terceros y los pesos `model.pt` tienen condiciones propias.
+Not yet specified.

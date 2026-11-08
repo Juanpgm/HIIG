@@ -1,7 +1,7 @@
 # API del normalizador de direcciones de Cali
 
 Servicio HTTP que normaliza direcciones de Santiago de Cali contra el catastro
-(catastro urbano indexado), devuelve el numero predial nacional, la manzana,
+(330 387 direcciones indexadas), devuelve el numero predial nacional, la manzana,
 la coordenada del centroide del predio y el barrio/vereda y comuna/corregimiento
 oficiales del IDESC.
 
@@ -50,60 +50,58 @@ sustituyen por `confianza`). `reliability.json` admite dos formatos (campo `kind
 | --- | --- | --- |
 | `direccion_entrada` | texto | El texto original recibido. |
 | `estado` | texto | `OK`, `SIN_MATCH` o `NO_PARSEABLE`. |
-| `motivo` | texto | Razon del rechazo. En filas `OK` es vacio o una o varias notas separadas por `; `: `aproximado: <regla>` (letra de via presente en un solo lado, placa a 1-2 unidades o cuadrante presente en un solo lado; ninguna es `predio`); `nivel maximo <nivel>: <razon>` (el techo de `nivel_precision` que impone esa aproximacion); `direccion compartida por N predios` (se reporta el primer predio por OBJECTID); `coordenada: centroide de la direccion compartida por N predios` (solo si los artefactos no traen el centroide del predio reportado, ver `lat` / `lon`); `NPN nulo en catastro`; `NPN anomalo en catastro (<por que>)` (no tiene 30 digitos o trae caracteres no numericos; no se descarta). Un sufijo numerico de via o cruce distinto o presente en un solo lado (`KR 31 F` frente a `KR 31 F 3`) es otra calle: rechaza la fila con `numero de sufijo de via - != 3`; cuando el unico motivo es un sufijo presente en un solo lado, `motivo` termina con la marca estable `regla: sufijo unilateral` (filtrable: ver el costo medido mas abajo). Un cuadrante distinto en campos distintos (`CL 9 NORTE # 41-26` frente a `CL 9 # 41 OESTE - 26`) tambien rechaza: `cuadrante NORTE != OESTE`. |
-| `nivel_precision` | texto o null | `predio`, `via`, `esquina` (sin placa), `manzana` (placa a 1-2 unidades, letra de via o cuadrante presente en un solo lado, o direccion compartida) o `direccion` (compartida entre manzanas, o NPN nulo); null si no es `OK`. Se deriva del nivel de posicion (`position_tier`). Una fila con cualquiera de esas aproximaciones nunca sale como `predio`. |
+| `motivo` | texto | Razon del rechazo. En filas `OK` es vacio o una o varias notas separadas por `; `: `aproximado: <regla>` (letra de via presente en un solo lado, placa a 1-2 unidades o cuadrante presente en un solo lado; ninguna es `predio`); `nivel maximo <nivel>: <razon>` (el techo de `nivel_precision` que impone esa aproximacion); `direccion compartida por N predios` (se reporta el primer predio por OBJECTID); `coordenada: centroide de la direccion compartida por N predios` (solo si los artefactos no traen el centroide del predio reportado, ver `lat` / `lon`); `NPN nulo en catastro`; `NPN anomalo en catastro (<por que>)` (no tiene 30 digitos o trae caracteres no numericos; no se descarta). Un sufijo numerico de via o cruce distinto o presente en un solo lado (`KR 26 H` frente a `KR 26 H 3`) es otra calle: rechaza la fila con `numero de sufijo de via - != 3`; cuando el unico motivo es un sufijo presente en un solo lado, `motivo` termina con la marca estable `regla: sufijo unilateral` (filtrable: ver el costo medido mas abajo). Un cuadrante distinto en campos distintos (`CL 5 NORTE # 38-10` frente a `CL 5 # 38 OESTE - 10`) tambien rechaza: `cuadrante NORTE != OESTE`. |
+| `nivel_precision` | texto o null | `predio`, `via`, `esquina` (sin placa, **o** letra de via presente en un solo lado: son dos situaciones distintas con el mismo nivel, y quien consuma el campo debe leer `motivo` para distinguirlas; la segunda trae `nivel maximo esquina: via con letra en un solo lado`), `manzana` (placa a 1-2 unidades, cuadrante presente en un solo lado, o direccion compartida) o `direccion` (compartida entre manzanas, o NPN nulo); null si no es `OK`. Una fila con cualquiera de esas aproximaciones nunca sale como `predio`. |
 | `direccion_normalizada` | texto o null | Base de la direccion (`<via> # <cruce> - <placa>`) catastral o por reglas, seguida de `complemento_normalizado` si existe. El complemento escrito en el catastro no se copia: solo se emite el de la entrada. |
 | `fuente_normalizacion` | texto o null | `catastro`, `reglas` o null. |
-| `complemento_normalizado` | texto o null | Parte de unidad de `direccion_normalizada` (por ejemplo `TO F AP 101`), tomada de la **entrada** y escrita en forma canonica (`TORRE`/`T-` pasan a `TO`, orden fijo de tipos). Solo se emiten unidades reconocidas (torre, bloque, apto, piso, casa...) con un codigo corto o un nombre, tambien cuando vienen tras una coma o un punto y coma (`CL 9 # 41-26, Torre B` -> `TO B`; un barrio, la ciudad o texto libre tras la coma se ignoran); `TORRE O` y `T B` (una `T` suelta seguida de una letra o un numero corto) se reconocen como torre; el texto libre (`FRENTE A LA TIENDA`, `CASA ESQUINERA`, `TORRE BLANCA`, `EDIFICIO DE TRES PISOS`) se descarta. Barrio, vereda y corregimiento (`BR`, `VDA`, `CGTO`) se reconocen pero **no** se emiten: no identifican un edificio. Un valor con varias partes se conserva entero y con una sola grafia: las partes de distinta clase se pegan (`101 A`, `101-A` -> `101A`; `F-2` -> `F2`) y las de la misma clase se unen con guion (`3 02`, `3 - 02` -> `3-02`, distinto de `302`); el primer numero pierde los ceros a la izquierda (`0101` -> `101`). Las palabras marcador antes del valor se omiten (`TORRE N 3` -> `TO 3`, `TORRE LETRA A` -> `TO A`) y `TORRE UNO A` es `TO 1A`. Es exactamente la misma cadena en filas `OK` y no `OK` para la misma entrada (aunque el catastro escriba `TO 02` o `AP 0101`); `null` si la entrada no trae unidades. En filas `OK`, si la entrada da para un tipo un valor que el catastro no tiene, gana la entrada y `motivo` incluye `complemento distinto al catastro: <tipos>`; repetir el valor del catastro con texto libre alrededor no es un conflicto. En el endpoint ESRI **no** se expone: ahi solo viaja `direccion_normalizada`, que ya la incluye. |
-| `position_tier` | texto | Que tan bien ubicada quedo la fila: `predio` (centroide del predio, radio 15 m), `lote` (centroide del lote; unidad distinta al catastro, sin NPN, 44 m), `tramo` (coordenada interpolada entre predios vecinos del mismo costado, 15 a 23 m segun la brecha), `manzana` (punto del mejor candidato, aproximado, 56 m), `via` (extrapolacion o parse truncado: coordenadas, NPN y manzana retenidos salvo que el servicio active `EXTRAPOLATED_COORDS_ENABLED`; 21 m) o `none`. |
-| `position_radius_m` | numero o null | Radio de error geometrico (p90, derivado del catastro, sin GPS; metros) del nivel de posicion; null si `none`. |
-| `position_source` | texto | Origen de la coordenada: `parcel` (centroide de un predio), `interp` (interpolada o extrapolada) o `none`. |
-| `selected_doc_id` | entero o null | Indice del documento catastral elegido; null si la fila no es `OK`. |
-| `override_rejected` | booleano | `true` si el candidato recuperado fue rechazado por las reglas estructurales (la base catastral difiere de la direccion de entrada). |
-| `direccion_catastral` | texto o null | Direccion del predio coincidente tal como la escribe el catastro (solo filas `OK`). `direccion_normalizada` es la base catastral solo en los niveles `predio` y `lote`; en `tramo`, `via` y filas aproximadas es el texto normalizado de la consulta. |
-| `fidelity_risk` | texto | Riesgo de que `direccion_normalizada` sea OTRA direccion que la de entrada (deriva semantica, no de caracteres): `high`, `medium`, `low` o `none`. `high` limita `position_tier` a `via` y `medium` a `manzana` (sin NPN); `high` ademas deja `direccion_normalizada` en blanco. |
-| `fidelity_flags` | texto | Banderas de `fidelity_risk` separadas por `;` (por ejemplo `plate_changed;letters_dropped`); `no_address` si no hay direccion de salida; vacio si no hay hallazgos. |
-| `catalog_status` | texto | Estado frente al catastro, por precedencia: `unparsed` (sin direccion, gramatica no reconocida o parse truncado), `verified` (la base coincide exactamente con el catastro y el riesgo de fidelidad es none/low), `ambiguous` (varios predios comparten la direccion, o la fila se abstuvo por competencia entre manzanas), `door_not_catalogued` (la base es valida pero no existe en el catastro), `below_cutoff` (bajo el umbral de confianza) o `rejected_mismatch` (cualquier otro rechazo). |
-| `address_verified` | booleano | `true` exactamente cuando `catalog_status` es `verified`. |
+| `complemento_normalizado` | texto o null | Parte de unidad de `direccion_normalizada` (por ejemplo `TO F AP 101`), tomada de la **entrada** y escrita en forma canonica (`TORRE`/`T-` pasan a `TO`, orden fijo de tipos). Solo se emiten unidades reconocidas (torre, bloque, apto, piso, casa...) con un codigo corto o un nombre, tambien cuando vienen tras una coma o un punto y coma (`CL 5 # 38-10, Torre B` -> `TO B`; un barrio, la ciudad o texto libre tras la coma se ignoran); `TORRE O` y `T B` (una `T` suelta seguida de una letra o un numero corto) se reconocen como torre; el texto libre (`FRENTE A LA TIENDA`, `CASA ESQUINERA`, `TORRE BLANCA`, `EDIFICIO DE TRES PISOS`) se descarta. Barrio, vereda y corregimiento (`BR`, `VDA`, `CGTO`) se reconocen pero **no** se emiten: no identifican un edificio. Un valor con varias partes se conserva entero y con una sola grafia: las partes de distinta clase se pegan (`101 A`, `101-A` -> `101A`; `F-2` -> `F2`) y las de la misma clase se unen con guion (`3 02`, `3 - 02` -> `3-02`, distinto de `302`); el primer numero pierde los ceros a la izquierda (`0101` -> `101`). Las palabras marcador antes del valor se omiten (`TORRE N 3` -> `TO 3`, `TORRE LETRA A` -> `TO A`) y `TORRE UNO A` es `TO 1A`. Es exactamente la misma cadena en filas `OK` y no `OK` para la misma entrada (aunque el catastro escriba `TO 02` o `AP 0101`); `null` si la entrada no trae unidades. En filas `OK`, si la entrada da para un tipo un valor que el catastro no tiene, gana la entrada y `motivo` incluye `complemento distinto al catastro: <tipos>`; repetir el valor del catastro con texto libre alrededor no es un conflicto. En el endpoint ESRI **no** se expone: ahi solo viaja `direccion_normalizada`, que ya la incluye. |
 | `numero_predial_nacional` | texto o null | 30 digitos del predio; `null` si el catastro no trae NPN para la direccion (nunca el texto `None`). |
 | `manzana` | texto o null | Codigo de manzana catastral; `null` si el catastro no la trae. |
 | `lat` | numero o null | Latitud (EPSG:4326). Es el centroide **del predio cuyo NPN se reporta** (el primer predio por OBJECTID de la direccion) cuando los artefactos traen `catastro_own_centroids.parquet` (va en la imagen Docker) o `catastro.parquet`; en una direccion de un solo predio coincide con el centroide de la direccion. Si no hay ninguno de los dos archivos, o ese predio no tiene centroide, es el centroide de la **direccion** (mediana de todos los predios que la comparten, a veces a mas de 50 m del reportado) y `motivo` lo dice con `coordenada: centroide de la direccion compartida por N predios`. |
 | `lon` | numero o null | Longitud (EPSG:4326), con la misma regla que `lat`. |
-| `confianza` | numero o null | Puntaje fusionado 0-1, **sin calibrar** (no es una probabilidad: una `confianza` alta no implica que el predio sea exacto). |
+| `confianza` | numero o null | Puntaje fusionado 0-1, **sin calibrar** (no es una probabilidad: en el rango 0.9-1.0 solo ~64 % acierta el predio exacto). |
 | `confiabilidad` | numero o null | Probabilidad **calibrada** (0-1) de que `numero_predial_nacional` sea el predio correcto. |
 | `confiabilidad_manzana` | numero o null | Probabilidad calibrada (0-1) de que `manzana` sea la correcta; siempre `>= confiabilidad`. |
-| `margen` | numero o null | Diferencia de puntaje fusionado entre el predio entregado y el mejor candidato alternativo que tambien pasa las reglas y esta en **otra manzana**. Cuanto menor, mas ambigua la manzana; `null` si no hay competidor o la fila no es `OK`. Con el `ambiguity_delta` por defecto (0.02) las filas con `margen < 0.02` pasan a `SIN_MATCH`; con `ambiguity_delta=0` es solo informativo. Las filas `OK` con `margen` pequeno acierta la manzana con menos frecuencia que el resto; mida el efecto con su propia muestra. |
+| `margen` | numero o null | Diferencia de puntaje fusionado entre el predio entregado y el mejor candidato alternativo que tambien pasa las reglas y esta en **otra manzana**. Cuanto menor, mas ambigua la manzana; `null` si no hay competidor o la fila no es `OK`. Con el `ambiguity_delta` por defecto (0.02) las filas con `margen < 0.02` pasan a `SIN_MATCH`; con `ambiguity_delta=0` es solo informativo. En la validacion, las filas `OK` con `margen < 0.05` (~5 % de las `OK`) acertaron la manzana solo ~29 % de las veces frente a ~84 % en general. |
 | `barrio_vereda` | texto o null | Nombre oficial IDESC del barrio o de la vereda. |
 | `comuna_corregimiento` | texto o null | `Comuna 19` o el nombre del corregimiento. |
+| `fuente` | texto o null | **Opcional, al final.** Fuente del documento catastral elegido (`nomenclatura_cert`, `nomenclatura_pcer` o `catastro`). Solo existe cuando el indice servido trae la columna `fuente` (indices de nomenclatura); con el indice de produccion la clave no aparece. `null` si la fila no tiene documento elegido. Un valor fuera del vocabulario se reporta (`fuente_vocab`, solo reporte) y nunca se corrige. |
+| `estado_nomenclatura` | texto o null | **Opcional, al final.** `estado_nomenclatura` del documento elegido, con las mismas reglas de presencia que `fuente`. |
 
 ### Regla recomendada para un NPN confiable
 
-Regla de uso sugerida (los resultados de las corridas no se publican; valide el corte con su propia muestra,
-ver `documentacion/08-metricas-y-confiabilidad.md`):
+Medido sobre 26 287 direcciones reales con dos referencias independientes (capa SIG de reportes; GPS de campo
+de pegatinas y de inspecciones, sin los GPS derivados), con la configuracion de la CLI:
 
 ```
 estado == "OK"  y  nivel_precision == "predio"  y  confiabilidad >= 0.58
 ```
 
-El corte `0.58` corresponde a la escala del `reliability.json` servido (v4). Si se sirve el v5
-(`artifacts/reliability_v2.json`), la escala cambia y el equivalente elegido en desarrollo es `>= 0.81`
-(ver `documentacion/08-metricas-y-confiabilidad.md`, secciones 4 y 5).
+| Referencia | Cobertura de las `OK` | Mismo lote | A mas de 100 m |
+| --- | --- | --- | --- |
+| Todas las `OK` (SIG) | 100 % | 90,1 % | 2,3 % |
+| Regla recomendada (SIG) | 87,4 % | 94,1 % | 1,20 % |
+| Todas las `OK` (GPS) | 100 % | 58,7 % | 5,1 % |
+| Regla recomendada (GPS) | 85,2 % | 61,0 % | 3,28 % |
 
-No suba `confiabilidad` por encima de ~0.62 sin validarlo: la relacion con el acierto no es monotona. El GPS de campo cae en la fachada y no es el lote exacto, por lo que un acierto medido contra GPS es un piso, no la precision real.
+No suba `confiabilidad` por encima de ~0.62: la mejora no es monotona (con GPS, >= 0.64 baja el mismo lote de 61,0 % a 50,9 %
+y sube los errores a mas de 100 m a 3,9 %). El GPS de campo cae en la fachada y no es el lote exacto: tome 61 % como piso, no como la
+precision real.
 
-### Costos de las reglas duras
+### Costos medidos de las reglas duras
 
-- **Sufijo numerico presente en un solo lado.** Se mantiene como rechazo duro (otra calle en el papel). Costo: parte de las
-  filas que eran `OK` antes de la regla y ahora se rechazan por un sufijo en un solo lado eran el lote correcto
-  (mida la fraccion con su propia muestra). Las filas rechazadas
+- **Sufijo numerico presente en un solo lado.** Se mantiene como rechazo duro (otra calle en el papel). Costo medido: de 79
+  filas del gold que eran `OK` antes de la regla y ahora se rechazan por un sufijo en un solo lado, **24 eran el lote correcto**
+  (con sufijos distintos en ambos lados fue 1 de 27). Las filas rechazadas
   por esa sola razon llevan `regla: sufijo unilateral` en `motivo` para auditarlas. Un candidato que solo falla esa regla
   **si cuenta** como competidor de ambiguedad (`margen`, `ambiguo: ...`); uno con sufijos distintos en ambos lados no.
-- **`nivel_precision == esquina`** significa "sin placa". Una letra de via presente en un solo lado queda en `manzana` y `motivo` lo explica.
+- **`nivel_precision == esquina`** significa a la vez "sin placa" y "letra de via en un solo lado": lea `motivo`.
 
 ### Reproducibilidad
 
 Las columnas de `normalize_strict`, la CLI y la API no dependen del tamano del lote: el codificador de consultas y la cabeza de
-coordenadas corren en fp32 y la similitud de cada candidato se recalcula en fp32 (misma entrada dos veces: sin diferencias). `normalize_batch` (usado por `scripts/ablation.py` y `smoke_eval.py`) conserva el camino bf16 de
+coordenadas corren en fp32 y la similitud de cada candidato se recalcula en fp32 (misma entrada dos veces: 0 diferencias en 26 287
+filas). `normalize_batch` (usado por `scripts/ablation.py`, `smoke_eval.py` y `build_notebook.py`) conserva el camino bf16 de
 `encode_queries` / `search`; la independencia del tamano del lote vale para `score_components` / `normalize_strict`, no para ese camino.
 
 ---
@@ -131,11 +129,16 @@ El umbral de confianza es **`0.73`**, calibrado y leido de `artifacts/tuning.jso
 no es un parametro de la peticion, por lo que una integracion no puede relajarlo
 por accidente. Se puede consultar en `/health`.
 
-Por que `barrio_buffer` vale 1000 y no 200: los nombres de barrio de las fuentes con GPS de campo vienen de un
-geocodificador inverso cuyas extensiones coloquiales no coinciden con los poligonos oficiales del IDESC, por lo que el
-barrio del texto concuerda con el poligono del predio mucho menos que la comuna. Una reja de 200 m descartaba demasiadas
-filas validas; con 1000 m mas escalamiento se conservan mas filas `OK` sin aumentar la proporcion de errores grandes.
-Los datos de esa medicion no se publican; repita la comparacion con su propia fuente antes de cambiar el valor.
+Por que `barrio_buffer` vale 1000 y no 200: medido sobre `stickers` (3 697 filas
+con coordenada GPS del inspector), la reja de 200 m retenia 138 filas de las
+cuales el 86 % estaba a menos de 100 m del punto GPS registrado. Los nombres de
+barrio de ese archivo vienen de un geocodificador inverso cuyas extensiones
+coloquiales no coinciden con los poligonos oficiales del IDESC: el barrio del
+texto concuerda con el poligono del predio solo el 77 % de las veces, mientras la
+comuna concuerda el 92 %. Con 1000 m mas escalamiento se conservan 2 436 filas
+`OK` con la misma proporcion (3,1 %) de errores mayores a 500 m. La auditoria de
+octubre de 2026 lo confirmo con otras dos referencias (capa SIG de reportes y GPS de
+campo): +619 y +202 filas `OK` con la misma proporcion de errores mayores a 100 m.
 
 ---
 
@@ -214,7 +217,7 @@ despues.
 
 ```bash
 curl -s -X POST https://<app>.up.railway.app/api/v1/inspect \
-  -F "file=@archivo.xlsx"
+  -F "file=@inspecciones.xlsx"
 ```
 
 ```json
@@ -233,7 +236,7 @@ curl -s -X POST https://<app>.up.railway.app/api/v1/inspect \
   "preview": [{"id_edan": "XXXXX", "direccion": "KR 99 BIS # 9B2 99", "barrio": "Barrio de ejemplo"}],
   "warnings": ["fila de encabezado detectada automaticamente: 2"],
   "header_row": 2,
-  "sheets": ["Hoja1"]
+  "sheets": ["inspecciones"]
 }
 ```
 
@@ -263,7 +266,7 @@ Normaliza un archivo completo.
 
 ```bash
 curl -s -X POST https://<app>.up.railway.app/api/v1/normalize \
-  -F "file=@archivo.xlsx" \
+  -F "file=@inspecciones.xlsx" \
   -F "address_column=direccion" \
   -F "output_format=json"
 ```
@@ -275,15 +278,15 @@ curl -s -X POST https://<app>.up.railway.app/api/v1/normalize \
   "warnings": ["fila de encabezado detectada automaticamente: 2"],
   "results": [
     {
-      "direccion_entrada": "Carrera7#14-58",
+      "direccion_entrada": "Carrera1#9-02",
       "estado": "OK",
       "motivo": "",
-      "direccion_normalizada": "KR 7 # 14 - 58",
+      "direccion_normalizada": "KR 1 # 9 - 02",
       "fuente_normalizacion": "catastro",
-      "numero_predial_nacional": "<NPN_30_DIGITOS>",
-      "manzana": "<MANZANA_17_DIGITOS>",
-      "lat": 3.4500,
-      "lon": -76.5300,
+      "numero_predial_nacional": "760010100031100010001000000000",
+      "manzana": "76001010003110001",
+      "lat": 3.45256,
+      "lon": -76.534611,
       "confianza": 0.969,
       "confiabilidad": 0.675,
       "confiabilidad_manzana": 0.906,
@@ -291,10 +294,10 @@ curl -s -X POST https://<app>.up.railway.app/api/v1/normalize \
       "comuna_corregimiento": "Comuna 3"
     },
     {
-      "direccion_entrada": "Calle 9 # 41-63, San Fernando",
+      "direccion_entrada": "Calle 5 # 38-93, San Fernando",
       "estado": "SIN_MATCH",
-      "motivo": "placa 63 != 69",
-      "direccion_normalizada": "CL 9 # 41 - 63",
+      "motivo": "placa 93 != 69",
+      "direccion_normalizada": "CL 5 # 38 - 93",
       "fuente_normalizacion": "reglas",
       "numero_predial_nacional": null,
       "manzana": null,
@@ -309,8 +312,6 @@ curl -s -X POST https://<app>.up.railway.app/api/v1/normalize \
   ]
 }
 ```
-
-Los valores de `numero_predial_nacional`, `manzana`, `lat` y `lon` de este ejemplo son marcadores ficticios; no corresponden a ningún predio real.
 
 ### Salidas de archivo
 
@@ -329,8 +330,8 @@ Con `output_format=xlsx`, `csv` o `geojson` la respuesta es el archivo, con
 
 ```bash
 curl -X POST https://<app>.up.railway.app/api/v1/normalize \
-  -F "file=@archivo.xlsx" -F "address_column=direccion" \
-  -F "output_format=xlsx" -o archivo_normalizado.xlsx
+  -F "file=@inspecciones.xlsx" -F "address_column=direccion" \
+  -F "output_format=xlsx" -o inspecciones_normalizado.xlsx
 ```
 
 ---
@@ -341,11 +342,11 @@ Punto de integracion para otras fuentes que **ya tienen los datos en memoria** y
 no quieren subir un archivo. Se envia uno de dos cuerpos, nunca los dos:
 
 ```json
-{"records": [{"id": 1, "dir": "Calle 9 # 41-63"}], "address_field": "dir"}
+{"records": [{"id": 1, "dir": "Calle 5 # 38-93"}], "address_field": "dir"}
 ```
 
 ```json
-{"addresses": ["Calle 9 # 41-63", "Carrera 7 # 14-58"]}
+{"addresses": ["Calle 5 # 38-93", "Carrera 1 # 9-02"]}
 ```
 
 Los parametros del motor van en el mismo objeto JSON (`"min_struct": 0.7`, etc.).
@@ -355,7 +356,7 @@ La respuesta tiene la misma forma que `/api/v1/normalize` con
 ```bash
 curl -s -X POST https://<app>.up.railway.app/api/v1/normalize-json \
   -H "Content-Type: application/json" \
-  -d '{"records": [{"id": 1, "dir": "Carrera7#14-58"}], "address_field": "dir"}'
+  -d '{"records": [{"id": 1, "dir": "Carrera1#9-02"}], "address_field": "dir"}'
 ```
 
 ### Ejemplo en Python con `requests`
@@ -367,8 +368,8 @@ BASE = "https://<app>.up.railway.app"
 
 # Filas que ya vienen de una base de datos, un CSV leido localmente, etc.
 filas = [
-    {"id": 1, "direccion": "Carrera7#14-58"},
-    {"id": 2, "direccion": "Calle 9 # 41-63, San Fernando"},
+    {"id": 1, "direccion": "Carrera1#9-02"},
+    {"id": 2, "direccion": "Calle 5 # 38-93, San Fernando"},
     {"id": 3, "direccion": "Corregimiento los andes, vereda la reforma, casa 204"},
 ]
 
@@ -410,7 +411,7 @@ integraciones triviales, y responde con la misma forma.
 ```bash
 curl -s -X POST https://<app>.up.railway.app/api/v1/normalize-address \
   -H "Content-Type: application/json" \
-  -d '{"addresses": ["Carrera7#14-58", "no es una direccion"]}'
+  -d '{"addresses": ["Carrera1#9-02", "no es una direccion"]}'
 ```
 
 ```json
@@ -419,7 +420,7 @@ curl -s -X POST https://<app>.up.railway.app/api/v1/normalize-address \
   "address_column": null,
   "warnings": [],
   "results": [
-    {"direccion_entrada": "Carrera7#14-58", "estado": "OK", "confianza": 0.969, "...": "..."},
+    {"direccion_entrada": "Carrera1#9-02", "estado": "OK", "confianza": 0.969, "...": "..."},
     {"direccion_entrada": "no es una direccion", "estado": "NO_PARSEABLE", "...": "..."}
   ]
 }
@@ -519,9 +520,9 @@ inmediato. Mientras eso ocurre, `/health` responde 503 con
 ## Nota de privacidad
 
 Ningun valor por omision de este servicio apunta a `context/` ni a `outputs/`.
-Esos directorios contienen datos reales de ciudadanos (registros de inmuebles,
-registros de personas afectadas con nombres y numeros de documento,
-reportes de campo) y estan excluidos en `.gitignore`,
+Esos directorios contienen datos reales de ciudadanos (registro de inmuebles
+asegurados, registro unico de damnificados con nombres y numeros de documento,
+reportes de inspeccion de campo) y estan excluidos en `.gitignore`,
 `.dockerignore` y `.railwayignore`: nunca deben subirse a un repositorio, ni
 incluirse en una imagen de contenedor, ni desplegarse. Los bytes que llegan por
 `multipart/form-data` se procesan en memoria y se descartan al terminar la

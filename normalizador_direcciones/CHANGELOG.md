@@ -4,13 +4,75 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [0.2.0] - Unreleased
+## [0.1.0] - Unreleased
 
-First packaged release. The version moves from the unreleased 0.1.0 of the initial import to 0.2.0 because it adds the
-reliability work below (position tiers, fidelity risk, catalog status, override guard, parser rounds 5 to 8). The package,
-`cali_address.__version__` and the API (`/openapi.json`) now report the same version.
+First packaged release.
+
+### Added (grammar rescue, 2026-11)
+
+- `cali_address.grammar_rescue`: a second, conservative chance for addresses the rule grammar rejects (`NO_PARSEABLE`).
+  It runs only for rows `parse_address` already failed on, so an address that parses today (and everything downstream of
+  it: query, model score, decision) is byte-identical. It tries, in order: the verified street-name table, variants and
+  abbreviations (`CAR`, `AVD`, leading `RA`, ordinal words such as `primera` / `sexta`, a comma after the street type
+  `AV, <n>`, `Av.` with a dot, `OE`), and free text before the first street-type word (building / hotel names) when the
+  remainder parses. A tower / block in that prefix (`TORRE D CALLE ...`) is never dropped: it moves after the
+  address as a complement. A prefix that contains digits is never stripped.
+- `cali_address.via_names` (generated) + `src/cali_address/data/via_names_review.csv` + `scripts/via_names_evidence.py` /
+  `scripts/build_via_names.py`: a reviewable street-NAME table. A name ships only when the cadastre evidence resolves it to
+  one street without ambiguity (status `verified`); `ambiguous` and `rejected` names stay in the CSV with the reason and are
+  not used. Today no name passes (see `docs/grammar-rescue.md`), so the shipped table is empty.
+- `normalize_strict(stats=...)` gains the counter `rescatadas_gramatica`.
+- Tests: `tests/test_grammar_rescue.py`.
+
+Expected effect and rollout: no retraining, ONNX weights and artifacts untouched. The engine fingerprint (sha256 of every
+`cali_address/**/*.py`) changes, so the ETL will create a NEW normalization profile and re-normalize every address when this
+engine is switched in; that switch is a manual step (unit N2), not part of this change.
 
 ### Added
+
+- Retrain tooling for an index built from the official nomenclature (new sources only; production artifacts and
+  default behaviour unchanged):
+  - `scripts/reproject_nomenclatura.py` (shapefile EPSG:6249 to 4326 with the `.prj`; bbox and cadastre-sanity gates)
+    and `scripts/download_nomenclatura.py` (resumable, paginated IDESC WFS download with `nomenclatura_meta.json` and a
+    WFS-vs-shapefile validation; the NPN gate is at lot level, coordinates median <= 1 m / p99 <= 2 m).
+  - `cali_address.nomenclatura_clean` + `scripts/clean_nomenclatura.py`: per-rule cleaning report, quarantine with a
+    reason (gate: < 0.5 %), `lote` / `prov` states excluded, coordinates from the local reprojection of
+    `ndcoordx` / `ndcoordy` (WFS point only as fallback).
+  - `parser.normalize_spacing` (`KR 32B` = `KR 32 B`), wired into `_pre_normalize` behind
+    `PRE_NORMALIZE_SEPARATES_LETTERS`, which is **off** by default and enabled per artifact by
+    `"pre_normalize_separates_letters": true` in `index_meta.json`.
+  - `cali_address.index_union` + `scripts/build_index.py`: index v2c (`--tiers cert`) / v2d (`cert,pcer`) written to its
+    own directory, `index_meta.json` last as the completion marker (sha256 per file), record accounting (every record
+    in exactly one bucket, `dropped` = 0), units sidecar `nomenclatura_units.parquet`, official strings as training
+    queries (`dataset.build_training_arrays(extra_queries=...)`, `q_source`), lot-level oracle-ceiling gate.
+    New document columns: `fuente`, `estado_nomenclatura`, `npn_catastro`, `direccion_catastro`, `npn_choice`,
+    `n_units`, `source_objectid`, `parse_ok`, `zona`, `address_key`, `doc_key`, `spread_m`; `normalize_strict` appends
+    `fuente` / `estado_nomenclatura` to its output only when the index has them.
+  - Index guard in `paths.py` (`INDEX_MARKER`, `INDEX_FILES`, `IndexFileMissingError`): a directory with
+    `index_meta.json` never falls back to production for index files. `scripts/run_experiment.py --index-dir` validates
+    the marker and sha256, links the index files into the experiment dir, defaults `max_minutes` to 120, fails loudly
+    (exit 4) when the time budget cuts training, and adds `stopped_early` / `index_id` to the leaderboard.
+  - Lot-level scoring (`NPN[:21]`): `correct_predial_lot`, `lot_present_in_index`, `predial_lot_precision` columns and
+    leaderboard fields; `eval_strict.py` writes `strict_eval_<tag>_by_fuente.csv` and `--validate-outputs`.
+  - `cali_address.retrain_compare` + `scripts/compare_indexes.py` / `scripts/compare_runs.py`: index profile, gold lot
+    coverage, coordinate shift, row agreement between runs, confidence curve and the A1-A12 acceptance checks
+    (`docs/retrain_2026-10_acceptance.md`).
+  - `cali_address.retrain_report` + `scripts/write_retrain_report.py`: the aggregates-only Markdown report
+    (`docs/retrain_2026-10_nomenclatura.md`) with a computed PASS / FAIL / INCONCLUSIVE verdict; missing inputs render as
+    `n/a (pending)`; deterministic output.
+  - Docs: `docs/model-artifacts.md` (v2 build from the new sources, layout, columns, promotion set) and
+    `docs/experiments.md`.
+- Output validation (D12a): `cali_address.output_schema` (pydantic v2 `NormalizedRecord`, `Correction`,
+  `validate_and_correct(row_or_frame, mode)`), driven by `chosen.decision.validate_outputs` in `tuning.json` or the
+  `validate_outputs=` argument of `service.normalize_strict` (`off` default = output byte-identical; `report` counts
+  violations per rule into `stats["output_validation"]` without touching the output; `correct` applies only
+  conservative corrections). `scripts/eval_strict.py --validate-outputs {off,report,correct}` writes
+  `strict_eval_<tag>_validation.csv`. `pydantic` is now a base dependency.
+- JEV audit (D12b): `cali_address.jev_check` + `scripts/audit_with_jev.py`, a thin layer over the sibling
+  `models/validacion_jev` (lazy import, `VALIDACION_JEV_SRC` override). Offline auditor, never in the serving path.
+  Privacy guard: only origins `nomenclatura_public` and `synthetic` can be sent; `dev`, `frozen_test`, `train_pairs`,
+  `unlabeled` and unknown origins are refused unless `--allow-private` (no pipeline passes it). Outputs
+  `jev_audit.json` (no address text) and `jev_audit_rows.parquet` stay under the untracked `artifacts/`.
 
 - Parser / fidelity fixes for the families behind true high fidelity-risk corruptions (round 7). Parser: letter-digit
   designators without `#` read like the explicit-hash form when unambiguous (`CRA 987 5B1 321 APT 201`,
@@ -26,16 +88,16 @@ reliability work below (position tiers, fidelity risk, catalog status, override 
   sits right after the plate (`# 654 - 321 OESTE SAN FERNANDO`; `ESTE` is not kept: no cadastral occurrence).
   Fidelity: decimal numbers with 3+ decimals, runs of 7+ digits and a `//` coordinate tail are not door digits;
   `ª` / `º` / `NÂ°` are read like the parser. Emission: a non-`OK` row with `fidelity_risk == 'high'` never emits rule
-  text (`catalog.keeps_rule_text`), whatever its `catalog_status`; `OK` rows are untouched.
-  Rows previously flagged high that were only a false alarm are now none, fidelity-none rows are unchanged, and no
-  non-OK high row emits text.
+  text (`catalog.keeps_rule_text`), whatever its `catalog_status`; `OK` rows are untouched. On the fresh 10,343-row
+  sample: high 484 -> 333, 130 of them now none, fidelity-none rows unchanged (0 became medium/high), and no non-OK
+  high row emits text (350 did).
 - Fidelity hardening (round 6). A stray `;` glued to a number sign / dash (`#;58-65`) no longer ends the door (the
   dropped plate is `door_digits_dropped`, high); a number group that trails the door and has no trace in the output
   (`- 106`, `/10`, `al 4-10`, `-4D 42`, a second `# 4-10`) raises the new `trailing_number_dropped` flag (medium) or
   `multi_address_truncated` for ranges; groups behind a unit marker (AP, TO, INT, LC, CS, BL, CASA, `P 1`) and
   numbers that start place text (`3 de Julio`) are exempt, and a door letter lost before a trailing number
-  (`40A 41`) is `letters_dropped` (high).
-  Fidelity-none rows are unchanged.
+  (`40A 41`) is `letters_dropped` (high). On the fresh 10,343-row sample all 48 JEV-"no" rows are now medium/high
+  (42 before) with 1 new medium flag on 5,980 JEV-"yes" rows; fidelity-none rows are unchanged.
 - Emission rule of `direccion_normalizada` by `catalog_status` (`catalog.keeps_rule_text`, applied in
   `service._apply_emission_rule`): for non-`OK` rows, `unparsed` no longer emits text, and `below_cutoff` /
   `rejected_mismatch` emit only when the fidelity risk is none/low and the parse is complete (via type + number,
@@ -107,32 +169,46 @@ reliability work below (position tiers, fidelity risk, catalog status, override 
   Same serving format as v2 (`kind: logistic`): the current loader serves it unchanged.
 - `scripts/eval_strict.py` copies `gt_quality` into the rows output, fills `has_gt` / `gt_lat` / `gt_lon` for files
   that lack them, and takes `--label-quality gold` for `train_pairs.parquet` (gold by construction).
-- New artifact `artifacts/reliability_v2.json` (v5-gold, fitted on gold OK rows of dev + train_pairs). `artifacts/reliability.json` (hybrid v4) is unchanged and still the one served.
-  Why: the stored v4 calibrator was fitted on rows whose predio label is mostly GPS noise, so it barely separates
-  correct from incorrect rows. The v5 calibrator, fitted on text-consistent rows and checked once on the frozen gold
-  rows (never used for fitting or choosing), orders them far better. Promotion changes the scale of `confiabilidad`,
-  so the `>= 0.58` rule does not carry over (dev-chosen equivalent: `>= 0.81`). Manzana: no measurable discrimination
-  either way (the gold sets have almost no wrong manzanas). Run results are not published. Details:
-  `../docs/CHANGELOG_confiabilidad.md` (repository root `docs/`).
+- New artifact `artifacts/reliability_v2.json` (v5-gold, 5,256 gold OK rows of dev + train_pairs, current code
+  `852ca89c4360`). `artifacts/reliability.json` (hybrid v4) is unchanged and still the one served.
+  Why: the stored v4 numbers (predio AUC 0.496, n = 529) come from 2026-09-25 rows whose predio label is mostly GPS
+  noise (noisy rows 23 % "correct" vs 99 % on gold rows). Measured once on the frozen gold rows (393 OK, never used
+  for fitting or choosing): predio AUC 0.709 -> 0.973, Brier 0.158 -> 0.035, ECE 0.306 -> 0.009 (bootstrap CIs of
+  the gains exclude zero). Promotion changes the scale of `confiabilidad` (mean ~0.63 -> ~0.94), so the `>= 0.58`
+  rule does not carry over (dev-chosen equivalent: `>= 0.81` for 98 % predio precision). Manzana: no measurable
+  discrimination either way (2 to 20 wrong manzanas in the gold sets). Details:
+  `../docs/CHANGELOG_confiabilidad.md`.
 
 ### Fixed (audit 2026-10)
 
-Findings of the October 2026 audit of the normalizer (the audit report itself is not part of this repository); each fix has its regression
+Findings of `../../docs/auditorias/AUDITORIA_NORMALIZADOR.md` (relative to this package); each fix has its regression
 test in `tests/test_auditoria_2026_10.py` (round 1) and `tests/test_auditoria_2026_10_r2.py` (round 2, after the
-independent review). Run results (before/after tables on the SIG reports layer and field GPS) are not published.
+independent review) and was measured before/after on two gold sets: the SIG reports layer and field GPS (stickers and
+inspections with a device / firebase / manual GPS only, derived GPS excluded), 26,287 real rows, CLI configuration.
+
+Measured effect of the whole audit (original code -> after round 2; clean references):
+
+| Gold | OK rows | Same lot | More than 100 m away |
+| --- | --- | --- | --- |
+| SIG (6,013 rows) | 4,328 -> 4,280 | 89.3 % -> 90.1 % | 2.9 % -> 2.3 % |
+| GPS (4,988 rows) | 2,951 -> 2,896 | 58.1 % -> 58.7 % | 5.6 % -> 5.1 % |
+
+Round 1 alone gave 4,282 OK rows (SIG) / 2,897 (GPS) with the same percentages: round 2 turned 6 OK rows (2 SIG, 1 GPS,
+1 derived GPS, 2 without reference) back into ambiguity abstentions and changed no other row (see below).
 
 - A numeric via / cross suffix that differs or is present on one side only (`KR 26 H` vs `KR 26 H 3`) is a hard
   violation (`numero de sufijo de via - != 3`); it used to come back `OK` at level `predio` with no note. The rule stays
-  hard on purpose, but it has a cost: some rows that were `OK` before and are now rejected for a suffix present on
-  one side only were the right lot. Those
+  hard on purpose, but it has a measured cost: of the 79 gold rows that were `OK` before and are now rejected for a
+  suffix present on one side only, **24 were the right lot** (with different suffixes on both sides: 1 of 27). Those
   rejections now end with the stable token `regla: sufijo unilateral` in `motivo` so downstream can audit or recover them.
   A candidate that fails ONLY that one-sided check still counts as an ambiguity competitor (`margen`, `ambiguo: ...`); a
   candidate with different suffixes on both sides, or with any other hard violation, does not. Round 1 had dropped such
-  competitors, which turned genuinely ambiguous rows into `OK`; the remaining boundary cases have a margin very close
-  to the 0.02 threshold and moved with the exact fp32 scoring.
+  competitors, which turned 6 genuinely ambiguous rows into `OK` (one a correct SIG lot, five wrong lots 63-224 m from the reference) (the other 21 of the 27 rows that went from
+  `ambiguo` to `OK` are boundary cases: their margin is 0.0202-0.0218 against the 0.02 threshold and moved with the exact
+  fp32 scoring). Same-lot accuracy unchanged (SIG 90.1 %, GPS 58.7 %).
 - A quadrant that conflicts across fields (`CL 5 NORTE # 38-10` vs `CL 5 # 38 OESTE - 10`: each side names one, none in
-  common) is a hard rejection (`cuadrante NORTE != OESTE`).
-  It was not seen in the evaluated rows, so it costs nothing there.
+  common) is a hard rejection (`cuadrante NORTE != OESTE`). Measured: 0 of the 26,287 rows were in that situation, so it
+  costs nothing.
 - A street letter on one side only (`KR 26` vs `KR 26 H`) stays an accepted soft match but `nivel_precision` is capped
   at `esquina` (was `manzana`) and `motivo` adds `nivel maximo esquina: via con letra en un solo lado`.
   `confiabilidad` is unchanged (the calibrated model keeps its previous level input).
@@ -144,7 +220,8 @@ independent review). Run results (before/after tables on the SIG reports layer a
   (city, barrio and free-text tails are still ignored); `TORRE O` and a bare `T B` are recognised. Only
   `complement_text` changes: the scoring complement, `confianza`, `estado` and the NPN are untouched.
 - Shared addresses: the reported `lat` / `lon` is now the centroid of the parcel whose NPN is reported; it used to be the
-  median of all parcels at the address, which could be more than 50 m away from the returned parcel. The own centroid comes from, in order: the new sidecar `catastro_own_centroids.parquet` (one row
+  median of all parcels at the address, more than 50 m away from the returned parcel in 432 documents (13 OK rows of the
+  measured set; 0 now). The own centroid comes from, in order: the new sidecar `catastro_own_centroids.parquet` (one row
   per document in document order: `objectid`, `numero_predial_nacional`, `own_lon`, `own_lat`; 8 MB; built by
   `scripts/build_own_centroids.py` or by `scripts/prepare_training.py`; accepted only when its rows match the documents),
   else `catastro.parquet` (`inference.load_own_centroids`, validated against the NPN). Round 1 only read
@@ -158,12 +235,12 @@ independent review). Run results (before/after tables on the SIG reports layer a
   `NPN anomalo en catastro (...)` and kept.
 - Results no longer depend on the batch size: the query encoder and the coordinate head run in fp32 (no bf16
   autocast), candidates are picked with the fp16 matmul but their similarity is recomputed in fp32
-  (`AddressNormalizer.encode_queries_exact`, `search_exact`). On GPU, one batch vs batches of 64 used to flip some
-  statuses and shift `confianza`; both now agree. `score_components([])` returns empty
+  (`AddressNormalizer.encode_queries_exact`, `search_exact`). On GPU, 8,435 rows in one batch vs batches of 64: 10 status
+  flips and `confianza` differences up to 0.0101 before; 0 flips and 1e-4 after. `score_components([])` returns empty
   arrays instead of raising. Caveat: `normalize_batch` (used by `scripts/ablation.py`, `scripts/smoke_eval.py` and
   `scripts/build_notebook.py`) still runs the bf16 `encode_queries` / `search`, so the batch-size independence holds for
-  the `score_components` / `normalize_strict` path (CLI, API, pipeline), not for those scripts. Same input twice: no
-  differences.
+  the `score_components` / `normalize_strict` path (CLI, API, pipeline), not for those scripts. Same input twice: 0
+  differences on 26,287 rows.
 - `esquina` now covers two situations: no plate, **or** a street letter on one side only. Consumers must read `motivo`
   (`nivel maximo esquina: via con letra en un solo lado`) to tell them apart.
 - Parser: `TORRE O 2` keeps the 2 (`TO O2`, like `TORRE B 2`); a glued `T2` is a tower (`T2 APTO 301` -> `TO 2`, `AP 301`);
@@ -173,17 +250,25 @@ independent review). Run results (before/after tables on the SIG reports layer a
 
 ### Recommended rule for a trustworthy NPN
 
-`estado == "OK"` and `nivel_precision == "predio"` and `confiabilidad >= 0.58` (CLI configuration). Run results are not
-published; validate the cut-off with your own sample.
+`estado == "OK"` and `nivel_precision == "predio"` and `confiabilidad >= 0.58` (CLI configuration, 26,287 real rows,
+clean references):
 
-Do not raise `confiabilidad` above ~0.62: the relation is not monotonic. GPS lands on the facade, so a same-lot figure
-measured against GPS is a floor.
+| Gold | Coverage of the OK rows | Same lot | More than 100 m away |
+| --- | --- | --- | --- |
+| SIG, all OK | 100 % | 90.1 % | 2.27 % |
+| SIG, rule | 87.4 % | 94.1 % | 1.20 % |
+| GPS, all OK | 100 % | 58.7 % | 5.08 % |
+| GPS, rule | 85.2 % | 61.0 % | 3.28 % |
+
+Do not raise `confiabilidad` above ~0.62: the relation is not monotonic (GPS at >= 0.64: 50.9 % same lot, 3.87 % beyond
+100 m). GPS lands on the facade, so its same-lot figure is a floor.
 
 ### Changed
 
 - `normalize_strict` defaults are now the CLI / API / pipeline ones: `barrio_buffer_m=CLI_BARRIO_BUFFER_M` (1000 m) and
   `gate_escalate=DEFAULT_GATE_ESCALATE` (`True`), one constant for every entry point. Library callers that relied on the
-  old 200 m / no escalation must pass them explicitly.
+  old 200 m / no escalation must pass them explicitly. Measured on the SIG layer and field GPS: +619 / +202 `OK` rows,
+  same share of lot and >100 m errors.
 - `normalize INPUT` without `-o` now writes `<input stem>_normalizado<ext>` next to a local input (same format;
   xls -> xlsx, txt -> csv, shp/zip/gpkg -> geojson) instead of failing with exit 2. URL and database inputs still
   require `-o`.
