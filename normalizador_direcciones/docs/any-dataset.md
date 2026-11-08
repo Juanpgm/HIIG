@@ -56,7 +56,7 @@ the header row is detected (works when the header is the densest of the first 15
 rows). Only the first sheet is read unless you pass `--sheet`.
 
 ```
-python -m cali_address normalize report.xlsx -o out.xlsx --sheet Hoja1 --header-row 2
+python -m cali_address normalize report.xlsx -o out.xlsx --sheet Inspections --header-row 2
 ```
 
 **Address split across columns.** Parts are joined in the given order with
@@ -136,7 +136,7 @@ omitted because it would duplicate that column.
 |---|---|---|---|
 | `direccion_entrada` | text | The address text received (joined text for `--address-parts`). | never; omitted with a single kept address column |
 | `estado` | text | `OK`, `SIN_MATCH`, `NO_PARSEABLE`, plus `FUERA_DE_AREA` and `ERROR` (below). | never |
-| `motivo` | text | Why the row was not OK. On OK rows it is empty or a note: `aproximado: ...` and / or `direccion compartida por N predios`. A row rejected only because a numeric street suffix is present on one side (`KR 31 F` vs `KR 31 F 3`) ends with the stable token `regla: sufijo unilateral`. | empty on a plain OK row |
+| `motivo` | text | Why the row was not OK. On OK rows it is empty or a note: `aproximado: ...` and / or `direccion compartida por N predios`. A row rejected only because a numeric street suffix is present on one side (`KR 26 H` vs `KR 26 H 3`) ends with the stable token `regla: sufijo unilateral`. | empty on a plain OK row |
 | `direccion_normalizada` | text | The matched cadastral base address (OK) or the deterministic canonical form (`reglas`), followed by the input's canonical units (`complemento_normalizado`, same spelling on both). | blank/unparseable input, `ERROR`, `FUERA_DE_AREA` |
 | `fuente_normalizacion` | text | `catastro` (real match), `reglas` (grammar only) or empty. | when `direccion_normalizada` is null |
 | `numero_predial_nacional` | text | Predial number of the matched predio; null (never the text `None`) when the cadastre has none, flagged in `motivo`. A digit-led code that is not 30 digits is flagged (`NPN anomalo en catastro (...)`), not dropped. | non-OK rows |
@@ -146,25 +146,12 @@ omitted because it would duplicate that column.
 | `confiabilidad` | float 0-1 | Calibrated probability the predio is right. Informational; never changes `estado`. | non-OK rows, or if `reliability.json` is absent |
 | `confiabilidad_manzana` | float 0-1 | Same for the manzana (always >= `confiabilidad`). | same as above |
 | `margen` | float | Score gap to the best rule-passing candidate in ANOTHER manzana; small = ambiguous. | non-OK rows, or no competitor |
-| `nivel_precision` | text | `predio` (via, cross and plate confirmed by the text), `via` (no cross number), `esquina` (no plate), `manzana` (plate off by 1-2, a street letter or a quadrant present on one side only, or a shared address within a block), `direccion` (shared across blocks, or null NPN). A row with any of these approximations is never `predio`; `motivo` says which (`aproximado: ...; nivel maximo <level>: <reason>`). | non-OK rows |
+| `nivel_precision` | text | `predio` (via, cross and plate confirmed by the text), `via` (no cross number), `esquina` (no plate, **or** a street letter present on one side only: `KR 26` vs `KR 26 H` may be another street; two different situations, read `motivo` to tell them apart), `manzana` (plate off by 1-2, a quadrant present on one side only, or a shared address within a block), `direccion` (shared across blocks, or null NPN). A row with any of these approximations is never `predio`; `motivo` says which (`aproximado: ...; nivel maximo <level>: <reason>`). | non-OK rows |
 | `barrio_vereda` | text | Official IDESC barrio / vereda. For OK rows from the matched predio; otherwise from a place detected in the text. | nothing known |
 | `comuna_corregimiento` | text | `Comuna 19` style name or corregimiento. Same sourcing. | nothing known |
-| `complemento_normalizado` | text | The unit part of `direccion_normalizada` (e.g. `TO F AP 101`), taken from the input and written canonically; identical on OK and non-OK rows. | the input has no units |
-| `position_tier` | text | How well the row is located: `predio` (parcel centroid, radius 15 m), `lote` (lot centroid; a site unit differs from the cadastre, predial withheld, 44 m), `tramo` (coordinates interpolated between the neighbouring parcels of the same street face, predial withheld, 15 to 23 m depending on the gap), `manzana` (best candidate point, approximate, 56 m), `via` (plate beyond the last known parcel, truncated parse or high fidelity risk: predial, manzana and coordinates withheld unless the service enables `EXTRAPOLATED_COORDS_ENABLED`; 21 m) or `none`. | never (`none` when there is no position) |
-| `position_radius_m` | float | Geometric error radius of the tier in metres (p90, derived from the cadastre itself, no GPS). | tier `none` |
-| `position_source` | text | Where the coordinate comes from: `parcel`, `interp` (interpolated / extrapolated) or `none`. | never |
-| `selected_doc_id` | int | Index of the chosen cadastral document (audit). | non-OK rows |
-| `override_rejected` | bool | True when the retrieved candidate was rejected by the structural guard because its base differs from the input address. | never (False by default) |
-| `direccion_catastral` | text | The matched parcel's address exactly as the cadastre writes it (OK rows only, for audit). | non-OK rows |
-| `fidelity_risk` | text | Risk that `direccion_normalizada` is a DIFFERENT address from the input: `none`, `low`, `medium` or `high`. `high` caps the tier at `via` and blanks the address; `medium` caps it at `manzana` (no predial). | never |
-| `fidelity_flags` | text | `;`-joined flags behind `fidelity_risk` (e.g. `plate_changed;letters_dropped`); `no_address` when there is no output address. | no findings |
-| `catalog_status` | text | `verified`, `ambiguous`, `door_not_catalogued`, `rejected_mismatch`, `unparsed` or `below_cutoff` (decided by precedence; see `documentacion/06-predicciones.md`, section 10.4). | never |
-| `address_verified` | bool | True exactly when `catalog_status` is `verified`. A plate mismatch is never a verified door. | never |
 
 `ERROR` and `FUERA_DE_AREA` rows carry `direccion_entrada` and `motivo` only; every
-other result column is empty. `direccion_normalizada` (and `fuente_normalizacion`) is also left empty
-on rows whose rule text is not trustworthy: unparsed rows, below-cutoff or rejected rows with an unsafe parse,
-and every row with `fidelity_risk = high`; the file pipeline then falls back to the raw text.
+other result column is empty.
 
 ## Error semantics
 
@@ -210,7 +197,7 @@ command line stay relative to the current directory and win over the file.
 ```toml
 input = "reporte.xlsx"
 output = "salida.csv"
-sheet = "Hoja1"
+sheet = "Inspecciones"
 header_row = 2
 address_parts = ["via", "numero", "complemento"]
 id_col = "id"

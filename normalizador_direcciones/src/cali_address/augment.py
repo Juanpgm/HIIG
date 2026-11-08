@@ -174,7 +174,7 @@ def corrupt(
     if p(0.1, "barrio_suffix"):
         out += rng.choice(BARRIO_SUFFIXES)
 
-    # -- source A duplicates the address inside the same cell
+    # -- Fasecolda duplicates the address inside the same cell
     if p(0.04, "duplicate_address"):
         out = f"{out} {out}"
 

@@ -2,20 +2,13 @@
 
 Built by `scripts/build_splits.py` (CPU only) into `artifacts/splits/`.
 
-The private workbooks are not shipped. They are named `source_a` .. `source_e` in the code and are read from
-`context/` (override the directory with `CALI_EVAL_CONTEXT_DIR`). Each file and sheet name is set with
-`CALI_EVAL_SOURCE_<A..E>_FILE` and `CALI_EVAL_SOURCE_<A..E>_SHEET` (generic defaults: `source_a.xlsx`, sheet
-`Sheet1`); optional later exports of sources C and D with `CALI_EVAL_SOURCE_C_EXTRA_FILE` and
-`CALI_EVAL_SOURCE_D_EXTRA_FILE`. The privacy guard `scripts/check_no_real_addresses.py` discovers these
-workbooks automatically (`CALI_PRIVATE_DATA_ROOT`, `CALI_PRIVATE_CONTEXT_GLOB`).
-
 | File | Content | Use |
 |------|---------|-----|
-| `frozen_test.parquet` | rows from one private registry with GT, unique address keys, none in dev | Final measurement only |
-| `dev.parquet` | the rows of `eval_scored_full.parquet` + `gt_quality` | Tuning rules / reliability |
-| `train_pairs.parquet` | real `raw_address -> gt_doc_id` pairs, gold rows only (three private sources) | Training only |
-| `unlabeled_addresses.parquet` | `raw_address`, `dataset` only (`source_b`, `source_e`) | Unsupervised / augmentation seeds |
-| `splits_report.json` | counts, overlap matrix, gold ratios | Audit (generated locally, not versioned) |
+| `frozen_test.parquet` | 2,000 Fasecolda rows with GT, unique address keys, none in dev | Final measurement only |
+| `dev.parquet` | the 2,078 rows of `eval_scored_full.parquet` + `gt_quality` | Tuning rules / reliability |
+| `train_pairs.parquet` | real `raw_address -> gt_doc_id` pairs, gold rows only (Fasecolda, inspecciones, stickers) | Training only |
+| `unlabeled_addresses.parquet` | `raw_address`, `dataset` only (RUD, acciones) | Unsupervised / augmentation seeds |
+| `splits_report.json` | counts, overlap matrix, gold ratios | Audit |
 
 ## Rule
 
@@ -43,5 +36,5 @@ workbooks automatically (`CALI_PRIVATE_DATA_ROOT`, `CALI_PRIVATE_CONTEXT_GLOB`).
 - `frozen_test` samples only rows that resolved to a parcel; keys mapping to conflicting GT are dropped.
 - Two units of one building have different keys (complement is part of the key), so the same building
   can appear in train and test under different apartments. Use `gt_predial` to check when that matters.
-- Later exports of the field sources are merged with earlier ones and deduplicated by key.
-- One source contains personal data: only the address string leaves the workbook.
+- The 09-24 inspecciones/stickers exports are merged with the 09-23 ones and deduped by key.
+- RUD contains personal data: only the address string leaves the workbook.

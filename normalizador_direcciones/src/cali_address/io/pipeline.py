@@ -29,7 +29,7 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from os import PathLike
-from typing import Callable, Iterator
+from typing import Callable, Iterable, Iterator
 
 import numpy as np
 import pandas as pd

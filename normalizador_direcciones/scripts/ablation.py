@@ -13,13 +13,14 @@ import os
 import sys
 import time
 
+import numpy as np
 import pandas as pd
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 ART = os.path.join(ROOT, "artifacts")
 
-from cali_address.evaluate import attach_ground_truth, score_predictions  # noqa: E402
+from cali_address.evaluate import attach_ground_truth, score_predictions, summarize  # noqa: E402
 from cali_address.geo import ParcelIndex  # noqa: E402
 from cali_address.inference import AddressNormalizer  # noqa: E402
 

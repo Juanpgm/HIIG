@@ -6,6 +6,7 @@ The face ``CL 987 # 654`` uses ``lat = 3.4 + plate * 1e-4`` (about 11.1 m per pl
 
 from __future__ import annotations
 
+import math
 
 import pandas as pd
 import pytest
@@ -13,7 +14,7 @@ import pytest
 from conftest import make_stub
 from cali_address import interp, service
 from cali_address.inference import base_mismatches
-from cali_address.interp import build_index, street_key
+from cali_address.interp import Located, build_index, street_key
 from cali_address.parser import parse_address
 from cali_address.service import normalize_strict
 

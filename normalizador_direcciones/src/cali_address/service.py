@@ -42,27 +42,33 @@ is how both the CLI and the API ask the caller to pick a field.
 from __future__ import annotations
 
 import io
+import json
 import math
 import os
 import re
+import tempfile
 import unicodedata
+import zipfile
 
 import numpy as np
 import pandas as pd
+from rapidfuzz import fuzz
 
 from .gazetteer import (
+    BARRIO_BUFFER_M,
     ZONE_BUFFER_M,
     Candidate,
     Detection,
     Gazetteer,
     gate_candidates,
 )
-from .inference import (  # noqa: F401  (SOFT_RULE_NAMES is re-exported: public API of this module)
+from .inference import (
     ONE_SIDED_FIELDS,
     PLATE_TRAMO_WINDOW,
     SOFT_RULE_NAMES,
     AddressNormalizer,
     base_mismatches,
+    check_validate_outputs,
     normalize_soft_rules,
     validate_max_soft,
 )
@@ -113,7 +119,40 @@ from .interp import index_for as _interp_index_for
 from .interp import street_key as _street_key
 from .interp import tramo_radius_m as _tramo_radius_m
 from .refine import refine_address
+from .grammar_rescue import rescue_parse as _rescue_parse
 from .fidelity import assess_fidelity
+from .output_schema import validate_and_correct
+from .decision import calibrated_for as _calibrated_for
+from .decision import CATASTRO_FUENTE as _CATASTRO_FUENTE
+from .decision import decide_level as _decide_level
+from .decision import excluded_fuentes as _excluded_fuentes
+from .evaluate import predial_lot as _predial_lot
+from .reliability import SOURCE_FEATURE as _SOURCE_FEATURE
+from .reliability import source_feature_value as _source_feature_value
+
+#: Optional output columns appended LAST when the cadastral docs carry them (the nomenclature indexes): the
+#: ``fuente`` and ``estado_nomenclatura`` of the SELECTED document, null on rows without one. With production-style
+#: docs (neither column) nothing is appended, so the output stays exactly ``OUTPUT_COLUMNS``.
+SOURCE_OUTPUT_COLUMNS = (("fuente", "_fuente"), ("estado_nomenclatura", "_estado_nomenclatura"))
+
+
+def _append_source_columns(normalizer, frame: pd.DataFrame) -> pd.DataFrame:
+    """``frame`` plus ``fuente`` / ``estado_nomenclatura`` of each row's ``selected_doc_id`` (when the docs have them)."""
+    selected = frame["selected_doc_id"].to_numpy(dtype=object, na_value=None)
+    for column, attribute in SOURCE_OUTPUT_COLUMNS:
+        values = getattr(normalizer, attribute, None)
+        if values is None:
+            continue
+        frame[column] = [None if doc is None else _clean_label(values[int(doc)]) for doc in selected]
+    return frame
+
+
+def _clean_label(value):
+    """A text label as is; ``None`` for a missing / NaN / blank cell."""
+    if value is None or value is pd.NA or (isinstance(value, float) and value != value):
+        return None
+    text = str(value)
+    return text if text.strip() else None
 
 __all__ = [
     "AddressColumnError",
@@ -156,9 +195,11 @@ DEFAULT_ARTIFACTS_DIR = os.path.join(PROJECT_ROOT, "artifacts")
 DEFAULT_BASEMAPS_DIR = os.path.join(PROJECT_ROOT, "basemaps")
 
 #: Default barrio-gate slack of :func:`normalize_strict`, the CLI, the API and the IO
-#: pipeline (one source of truth). A 200 m gate withholds many rows whose GPS reference is
-#: close, because the barrio names of some sources do not line up with the official polygons;
-#: 1000 m + escalation keeps them without raising the share of large errors.
+#: pipeline (one source of truth). Measured on stickers (inspector GPS as reference):
+#: 200 m withheld 138 rows of which 86 % sat within 100 m of the GPS point, while
+#: 1000 m + escalation keeps them at the same 3.1 % share of >500 m errors. Audit
+#: 2026-10 on two gold sets (SIG layer, field GPS): 1000 m + escalation adds +619 / +202
+#: OK rows with the same share of >100 m errors (2.9 % / 4.3 %).
 CLI_BARRIO_BUFFER_M = 1000.0
 
 #: Default of the gate escalation (barrio -> comuna -> corregimiento instead of
@@ -305,7 +346,7 @@ _SUFFIX_FIELD_LABELS = {
 
 #: Stable, machine-readable token ``motivo`` carries when a candidate was rejected ONLY
 #: because a numeric suffix is present on one side (``KR 26 H`` vs ``KR 26 H 3``). The
-#: rule stays hard; part of those rejections are the right
+#: rule stays hard; on the audit gold sets about 30 % of those rejections were the right
 #: lot (see CHANGELOG), so downstream can filter on this token to review them.
 ONE_SIDED_SUFFIX_TOKEN = "regla: sufijo unilateral"
 
@@ -489,14 +530,15 @@ def _tagged_violations(
 
 
 #: Most precise ``nivel_precision`` of a row accepted with a letter on only one side
-#: of the via (``KR 987`` vs ``KR 987 H`` are different streets). Such rows hit the right manzana less often
-#: than exact agreement and sit far from the reference more often. It used to be ``esquina``; the position tiers cap it at ``manzana`` (the tier says
+#: of the via (``KR 987`` vs ``KR 987 H`` are different streets). Measured on two gold
+#: sets, such rows hit the right manzana 53-65 % of the time and sit >100 m away in
+#: 13-17 %. It used to be ``esquina``; the position tiers cap it at ``manzana`` (the tier says
 #: so with its own 135 m radius), the same ceiling as every other one-sided finding.
 ONE_SIDED_VIA_LETTER_LEVEL = "manzana"
 
-#: Most precise level of a row accepted with a quadrant on only one side. Such
-#: rows keep most of the manzanas but their large-error share is higher than that of exact
-#: quadrant agreement, so they cannot be ``predio``.
+#: Most precise level of a row accepted with a quadrant on only one side. Measured
+#: on two gold sets, such rows keep ~88-91 % of the manzanas but their >100 m error
+#: share is 2-4x that of exact quadrant agreement, so they cannot be ``predio``.
 ONE_SIDED_QUADRANT_LEVEL = "manzana"
 
 
@@ -584,7 +626,7 @@ def _scan_rules(
             violations.append((f"{label} {qv} != {cv}", False))
     # Contradiction across fields (``CL 5 NORTE # 38-10`` vs ``CL 5 # 38 OESTE - 10``): each
     # side names a quadrant, none in common, and no same-field disagreement said so already.
-    # This situation was not seen among the evaluated OK rows, so rejecting costs nothing.
+    # Measured on 26,287 rows: 0 OK rows were in this situation, so rejecting costs nothing.
     if not any(m.startswith("cuadrante de ") for m, _soft in violations):
         query_fields = {getattr(query_parse, f) for f in _QUADRANT_FIELD_LABELS} - {None}
         cadastral_fields = {getattr(cadastral_parse, f) for f in _QUADRANT_FIELD_LABELS} - {None}
@@ -714,6 +756,17 @@ def reliability_features(
 
 #: Production default of the ambiguity abstention (0 disables it).
 DEFAULT_AMBIGUITY_DELTA = 0.02
+
+
+class _UnsetFloat(float):
+    """A float that equals its value but is recognised by identity: "the caller passed nothing".
+
+    It lets ``normalize_strict`` keep ``0.02`` as the visible default of ``ambiguity_delta`` while the calibrated mode can
+    still tell an explicit ``ambiguity_delta=0.02`` (which wins) from the untouched default (which it replaces by 0).
+    """
+
+
+_AMBIGUITY_UNSET = _UnsetFloat(DEFAULT_AMBIGUITY_DELTA)
 #: Fused-score gap above which a runner-up is treated as "no competition" by the model.
 MARGIN_CLIP = 0.3
 #: ``n_competidores`` counts rule-passing rivals in other manzanas within this fused-score gap.
@@ -725,7 +778,7 @@ _EPS = 1e-9
 
 def _competition(
     normalizer, kept: list, best, parsed, struct_by_doc: dict, min_struct: float, plate_tolerance: int,
-    soft_rules: frozenset = frozenset(), max_soft: int = 1,
+    soft_rules: frozenset = frozenset(), max_soft: int = 1, threshold: float | None = None,
 ) -> tuple[float | None, float | None, int]:
     """``(margen_manzana, margen_predio, n_competidores)`` for the chosen candidate.
 
@@ -734,13 +787,15 @@ def _competition(
     the chosen doc itself are skipped. ``margen_manzana`` is the gap to the best
     rival in a DIFFERENT manzana, ``margen_predio`` the gap to the best rival with
     a different doc (any manzana); ``None`` when there is none. ``n_competidores``
-    counts rivals in other manzanas within :data:`COMPETITOR_WINDOW`.
+    counts rivals in other manzanas within :data:`COMPETITOR_WINDOW`. ``threshold`` (default: the normalizer's) is
+    the fused-score cut-off a rival must reach; it is passed explicitly so the normalizer is never mutated.
     """
     best_manzana = str(normalizer._manzana[best.doc])
     margen_manzana = margen_predio = None
     n_competidores = 0
+    cutoff = normalizer.threshold if threshold is None else threshold
     rivals = sorted(
-        (c for c in kept if c.doc != best.doc and not math.isnan(c.score) and c.score >= normalizer.threshold),
+        (c for c in kept if c.doc != best.doc and not math.isnan(c.score) and c.score >= cutoff),
         key=lambda c: -c.score,
     )
     for cand in rivals:
@@ -753,7 +808,7 @@ def _competition(
             struct_by_doc[cand.doc], plate_tolerance, soft_rules,
         )
         # A candidate that fails ONLY the one-sided suffix rule is a different street on paper,
-        # but the evidence cannot tell: it still competes (on the gold sets, the
+        # but the evidence cannot tell: it still competes (measured on the gold sets, the
         # chosen row was the wrong lot in most of those ambiguities). Suffixes that differ on
         # both sides stay a real rejection.
         hard = [m for m in hard if not _is_one_sided_suffix(m)]
@@ -899,12 +954,8 @@ def _apply_emission_rule(row: dict, parsed) -> None:
         row["motivo"] = "; ".join(part for part in (row["motivo"], _HIGH_BLANK_NOTE) if part)
 
 
-def _apply_catalog_status(normalizer, rows: list, parses: list) -> None:
-    """Fill ``catalog_status`` / ``address_verified`` of every row (see :func:`cali_address.catalog.decide`).
-
-    The cadastre key set is only fetched (once) for a row that needs it: a batch of verified rows never builds it.
-    The private ``_catalog_*`` hints left by :func:`_build_row` are removed from the rows.
-    """
+def _catalog_keys_getter(normalizer):
+    """Zero-argument callable returning the cadastre key set (``None`` when unavailable), built at most once."""
     box: list = []
 
     def keys():
@@ -915,6 +966,17 @@ def _apply_catalog_status(normalizer, rows: list, parses: list) -> None:
                 box.append(None)
         return box[0]
 
+    return keys
+
+
+def _apply_catalog_status(normalizer, rows: list, parses: list, keys=None) -> None:
+    """Fill ``catalog_status`` / ``address_verified`` of every row (see :func:`cali_address.catalog.decide`).
+
+    The cadastre key set is only fetched (once) for a row that needs it: a batch of verified rows never builds it.
+    ``keys`` is an optional shared getter (:func:`_catalog_keys_getter`).
+    The private ``_catalog_*`` hints left by :func:`_build_row` are removed from the rows.
+    """
+    keys = keys or _catalog_keys_getter(normalizer)
     for row, parsed in zip(rows, parses):
         exact, shared = row.pop("_catalog_exact", False), row.pop("_catalog_shared", False)
         status = _catalog_decide(
@@ -924,6 +986,246 @@ def _apply_catalog_status(normalizer, rows: list, parses: list) -> None:
         row["catalog_status"] = status
         row["address_verified"] = status == "verified"
         _apply_emission_rule(row, parsed)
+
+
+#: Extra output columns of the calibrated decision layer, appended LAST (after the source and refine columns) and only
+#: when the artifact carries ``decision.json`` + ``reliability_calibrated.json``. Null on every non-OK row.
+CALIBRATED_OUTPUT_COLUMNS = (
+    "confiabilidad_calibrada", "banda_confiabilidad", "motivos_confiabilidad", "p_predio_cal", "p_manzana_cal",
+)
+_GUARD_ONE_SIDED_RE = re.compile(r"quadrant:manzana|letters:manzana")
+
+
+def _raw_margin_lot(normalizer, kept: list, best) -> float:
+    """Score gap between ``best`` and the best kept candidate of a DIFFERENT lot, no rule filter.
+
+    ``MARGIN_CLIP`` when there is none; clipped to ``[0, MARGIN_CLIP]``. A candidate with a missing or invalid lot
+    counts as "no lot" and is only compared with another invalid lot.
+    """
+    best_lot = _predial_lot(normalizer._predial[best.doc])
+    gaps = [
+        best.score - c.score for c in kept
+        if c.doc != best.doc and not math.isnan(c.score) and _predial_lot(normalizer._predial[c.doc]) != best_lot
+    ]
+    if not gaps:
+        return MARGIN_CLIP
+    return min(max(min(gaps), 0.0), MARGIN_CLIP)
+
+
+def _lot_conflict(normalizer, doc: int) -> float:
+    """``lot_conflict`` of the selected document in ``[0, 1]``; 0 when the index has no such column or the cell is null."""
+    docs = getattr(normalizer, "docs", None)
+    try:
+        if docs is None or "lot_conflict" not in docs.columns:
+            return 0.0
+        value = docs["lot_conflict"].iat[int(doc)]
+        if value is None or pd.isna(value):
+            return 0.0
+        return min(max(float(value), 0.0), 1.0)
+    except (TypeError, ValueError, IndexError, KeyError):
+        return 0.0
+
+
+def _calibration_stash(normalizer, kept, best, parsed, features: dict, soft: list, guard_caps: dict,
+                       gate_overridden, cadastral_predial, cadastral_manzana) -> dict:
+    """Serve-time features of an OK row that exist when the row is built (the rest is added after fidelity)."""
+    guard_text = "|".join(f"{k}:{v}" for k, v in sorted(guard_caps.items()))
+    fuente = getattr(normalizer, "_fuente", None)
+    return {
+        "features": {
+            "confidence": features["confidence"],
+            "margen_manzana": features["margen_manzana"],
+            "margen_predio": features["margen_predio"],
+            "raw_margin_lot": _raw_margin_lot(normalizer, kept, best),
+            "n_competidores": features["n_competidores"],
+            "log_n_predios": features["log_n_predios"],
+            "soft_n": float(min(len(soft), 3)),
+            "relaxed_plate": 1.0 if any(m.startswith("placa") for m in soft) else 0.0,
+            "gate_fallback": 1.0 if gate_overridden is not None else 0.0,
+            "plate_missing": 1.0 if parsed.plate is None else 0.0,
+            "cross_missing": 1.0 if parsed.cross_number is None else 0.0,
+            "src_pcer": _source_feature_value(None if fuente is None else fuente[best.doc]),
+            "lot_conflict": _lot_conflict(normalizer, best.doc),
+            "guard_one_sided": 1.0 if _GUARD_ONE_SIDED_RE.search(guard_text) else 0.0,
+            "guard_tramo": 1.0 if ":tramo" in guard_text else 0.0,
+            "predial_null": 1.0 if cadastral_predial is None else 0.0,
+        },
+        "doc": int(best.doc), "doc_predial": cadastral_predial, "doc_manzana": cadastral_manzana,
+        # opt-in feature of the calibrated model (not part of the 24): 1.0 for a document of the cadastre fallback tier
+        "src_catastro": 1.0 if fuente is not None and fuente[best.doc] == _CATASTRO_FUENTE else 0.0,
+    }
+
+
+def _complete_features(row: dict, parsed, stash: dict, keys) -> dict:
+    """The 24 features of an OK row: the stash plus what only exists after the fidelity step (fidelity, catalogue, nivel)."""
+    status = _catalog_decide(
+        parsed, "OK", row["motivo"], row["fidelity_risk"], bool(row.get("_catalog_exact", False)),
+        bool(row.get("_catalog_shared", False)),
+        door_known=lambda: None if keys() is None else _door_catalogued(parsed, keys()),
+    )
+    nivel = row["nivel_precision"]
+    features = dict(stash["features"])
+    features.update({
+        "fidelity_medium": 1.0 if row["fidelity_risk"] == "medium" else 0.0,
+        "fidelity_high": 1.0 if row["fidelity_risk"] == "high" else 0.0,
+        "cat_verified": 1.0 if status == "verified" else 0.0,
+        "cat_ambiguous": 1.0 if status == "ambiguous" else 0.0,
+        "cat_door_not_catalogued": 1.0 if status == "door_not_catalogued" else 0.0,
+        "nivel_manzana": 1.0 if nivel == "manzana" else 0.0,
+        "nivel_via": 1.0 if nivel == "via" else 0.0,
+        "nivel_esquina": 1.0 if nivel == "esquina" else 0.0,
+    })
+    return features
+
+
+def _apply_calibrated_decision(normalizer, rows: list, parses: list, detections: list, originals: list,
+                               calibrated, keys, sink: list | None = None, stats: dict | None = None) -> None:
+    """Calibrated decision layer, between the fidelity step and the catalogue status (see :mod:`cali_address.decision`).
+
+    For every OK row carrying a ``_calib`` stash: complete the features, predict ``(P_predio, P_manzana)`` and
+    decide. A predial emitted by the pipeline with ``P_predio >= tau_p`` is kept (band alta / media); otherwise a
+    row with ``P_manzana >= tau_m`` loses its predial (tier / nivel lowered to ``manzana``, note in ``motivo``, band
+    baja); otherwise the row becomes ``SIN_MATCH``. The layer can only remove a predial or a match, never add one.
+    Identity rules and tier caps are never overridden. ``_calib`` is popped from every row. With ``calibrated``
+    ``None`` the layer only fills ``sink`` (one feature dict per row, ``None`` for non-OK rows).
+    """
+    counters = {"reached": 0, "abstained": 0, "predio": 0, "manzana": 0, "alta": 0, "media": 0, "baja": 0}
+    reached_p: list = []
+    for i, (row, parsed) in enumerate(zip(rows, parses)):
+        stash = row.pop("_calib", None)
+        entry = None
+        if stash is not None and row["estado"] == "OK":
+            features = _complete_features(row, parsed, stash, keys)
+            if "src_catastro" in getattr(calibrated[0] if calibrated is not None else None, "feature_names", ()):
+                features["src_catastro"] = stash["src_catastro"]
+            entry = dict(
+                features, doc=stash["doc"], doc_predial=stash["doc_predial"], doc_manzana=stash["doc_manzana"],
+                src_catastro=stash["src_catastro"], emits_predial=row["numero_predial_nacional"] is not None, emits_manzana=row["manzana"] is not None,
+            )
+            if calibrated is not None:
+                rows[i] = _decide_row(row, i, stash, features, calibrated, detections, originals, counters, reached_p)
+        if sink is not None:
+            sink.append(entry)
+    if stats is not None and calibrated is not None:
+        stats["calibrated"] = {**counters, "p_predio": reached_p}
+
+
+def _decide_row(row: dict, i: int, stash: dict, features: dict, calibrated, detections, originals, counters,
+                reached_p) -> dict:
+    model, decision = calibrated
+    p_predio, p_manzana = model.predict(features)
+    emits_predial = row["numero_predial_nacional"] is not None
+    outcome, band = _decide_level(p_predio, p_manzana, emits_predial, decision)
+    counters["reached"] += 1
+    reached_p.append(round(float(p_predio), 4))
+    if outcome == "sin_match":
+        counters["abstained"] += 1
+        detection = detections[i]
+        replaced = _empty_result(
+            row["direccion_entrada"], "SIN_MATCH",
+            f"confiabilidad baja: p_manzana {p_manzana:.2f} < {decision['tau_m']:.2f}",
+            stash["rule_canonical"], detection, stash["rule_complement"],
+        )
+        replaced["confianza"] = row["confianza"]
+        return _apply_fidelity(replaced, originals[i], detection.cleaned_text if detection is not None else None)
+    counters[outcome] += 1
+    counters[band] += 1
+    if outcome == "manzana" and emits_predial:
+        row["numero_predial_nacional"] = None
+        tier = _worse_tier(row["position_tier"], "manzana")
+        row["position_tier"], row["position_radius_m"] = tier, float(POSITION_RADIUS_M[tier])
+        row["nivel_precision"] = _least_precise(row["nivel_precision"], _NIVEL_OF_TIER[tier])
+        row["motivo"] = "; ".join(
+            part for part in (row["motivo"], f"confiabilidad del predio baja (p={p_predio:.2f})") if part)
+    delivered = p_predio if outcome == "predio" else p_manzana
+    row["confiabilidad_calibrada"] = round(float(delivered), 3)
+    row["banda_confiabilidad"] = band
+    row["motivos_confiabilidad"] = model.motivos("predio" if outcome == "predio" else "manzana", features)
+    row["p_predio_cal"], row["p_manzana_cal"] = round(float(p_predio), 3), round(float(p_manzana), 3)
+    return row
+
+
+def _append_calibrated_columns(frame: pd.DataFrame, rows: list) -> pd.DataFrame:
+    """Append :data:`CALIBRATED_OUTPUT_COLUMNS` (values from the row dicts, null where a row has none)."""
+    for column in CALIBRATED_OUTPUT_COLUMNS:
+        values = [row.get(column) for row in rows]
+        numeric = column in ("confiabilidad_calibrada", "p_predio_cal", "p_manzana_cal")
+        frame[column] = pd.Series(values, dtype="float64" if numeric else "object", index=frame.index)
+    return frame
+
+
+#: Per-document attributes of the normalizer that follow the document order (sliced together by :func:`apply_exclusions`).
+#: Anything else (weights, ``xy_mean``, thresholds, ...) is left alone even when its length happens to equal the doc count.
+_PER_DOC_ATTRIBUTES = (
+    "docs", "doc_emb", "_direccion", "_predial", "_manzana", "_comuna", "_barrio", "_lat", "_lon", "_own_lon", "_own_lat",
+    "_n_predios", "_fuente", "_estado_nomenclatura", "_manzana_nunique", "_x_m", "_y_m",
+)
+
+
+def _slice_per_doc(value, keep: int, n: int):
+    """``value`` limited to its first ``keep`` documents; objects that are not per-document of length ``n`` come back as is."""
+    if isinstance(value, (pd.DataFrame, pd.Series)):
+        return value.iloc[:keep].reset_index(drop=True) if len(value) == n else value
+    if hasattr(value, "shape") and len(value.shape) >= 1 and value.shape[0] == n:
+        return value[:keep]
+    return value
+
+
+def apply_exclusions(normalizer, fuentes) -> int:
+    """Drop the documents whose ``fuente`` is in ``fuentes`` from ``normalizer`` and return how many were dropped.
+
+    The serving-time switch of the cadastre fallback tier. The excluded documents must be a contiguous TAIL of the index
+    (the fallback docs are appended after the base ones), so the remaining documents keep their ids and the normalizer then
+    serves exactly the index that never had the tail: retrieval is not post-filtered (which would shrink the top-k), the
+    rows simply do not exist. The caches derived from the documents (interpolation index, catalogue keys) are reset. Every per-document array is cut (:data:`_PER_DOC_ATTRIBUTES`, the ``_exact`` / ``_parsed_docs``
+    caches and the ONNX document matrix when present). It is applied once and cannot be undone on the same object: a later
+    call asking for a different set raises ``RuntimeError`` (build a new normalizer instead). A normalizer without ``fuente``
+    docs, an empty request or a ``fuente`` that no doc has is a no-op. ``ValueError`` when the excluded docs are not a tail
+    or are every document; ``TypeError`` / ``ValueError`` for a request that is not a list of non-blank strings. Nothing is
+    changed when it raises.
+    """
+    if isinstance(fuentes, (str, bytes)) or not hasattr(fuentes, "__iter__"):
+        raise TypeError("fuentes must be a list of fuente names")
+    wanted = frozenset(fuentes)
+    if any(not isinstance(v, str) or not v.strip() for v in wanted):
+        raise ValueError("fuentes must be non-blank strings")
+    applied = getattr(normalizer, "_excluded_fuentes", None)
+    if applied:
+        if wanted == applied:
+            return 0
+        raise RuntimeError(
+            f"the fuentes {sorted(applied)} are already excluded from this normalizer and cannot be restored: "
+            "create a new normalizer to change the set")
+    source = getattr(normalizer, "_fuente", None)
+    if not wanted or source is None:
+        return 0
+    drop = np.array([isinstance(v, str) and v in wanted for v in source], dtype=bool)
+    if not drop.any():
+        return 0
+    n = int(len(drop))
+    keep = int(n - drop.sum())
+    if keep == 0:
+        raise ValueError(f"excluding {sorted(wanted)} would remove every document of the index")
+    if drop[:keep].any():
+        raise ValueError(
+            f"the documents of {sorted(wanted)} are not a contiguous tail of the index: excluding them would shift the "
+            "ids of the others (rebuild the index without them instead)")
+    for name in _PER_DOC_ATTRIBUTES:
+        if hasattr(normalizer, name):
+            setattr(normalizer, name, _slice_per_doc(getattr(normalizer, name), keep, n))
+    doc_index = getattr(normalizer, "_doc_index", None)             # ONNX serving keeps its own fp16 matrix
+    if doc_index is not None and hasattr(doc_index, "_docs"):
+        doc_index._docs = _slice_per_doc(doc_index._docs, keep, n)
+        normalizer.doc_emb = doc_index._docs
+    for cache in ("_exact", "_parsed_docs"):
+        table = getattr(normalizer, cache, None)
+        if isinstance(table, dict):
+            setattr(normalizer, cache, {k: v for k, v in table.items() if (v if cache == "_exact" else k) < keep})
+    for derived in ("_interp_index", "_catalog_keys"):              # lazily built FROM the documents: stale now, rebuilt on use
+        if getattr(normalizer, derived, None) is not None:
+            setattr(normalizer, derived, None)
+    normalizer._excluded_fuentes = wanted
+    return n - keep
 
 
 def normalize_strict(
@@ -938,11 +1240,14 @@ def normalize_strict(
     zone_buffer_m: float = ZONE_BUFFER_M,
     gate_escalate: bool = DEFAULT_GATE_ESCALATE,
     feature_sink: list | None = None,
-    ambiguity_delta: float = DEFAULT_AMBIGUITY_DELTA,
+    ambiguity_delta: float = _AMBIGUITY_UNSET,
     soft_rules=None,
     max_soft: int | None = None,
     gate_fallback: bool | None = None,
     refine_input: bool = False,
+    validate_outputs: str | None = None,
+    threshold: float | None = None,
+    calibration_sink: list | None = None,
 ) -> pd.DataFrame:
     """Normalize a list of raw strings; only rows passing every rule get cadastral fields.
 
@@ -958,7 +1263,7 @@ def normalize_strict(
     reliability columns come from ``normalizer.reliability`` (``None`` when the
     artifact is missing, which leaves them ``None`` on OK rows).
 
-    ``ambiguity_delta`` (default :data:`DEFAULT_AMBIGUITY_DELTA`, 0 = off) is a soft
+    ``ambiguity_delta`` (default :data:`DEFAULT_AMBIGUITY_DELTA`, or 0 in calibrated mode unless passed; 0 = off) is a soft
     abstention: when positive, an OK row whose ``margen`` (fused-score gap to the
     best rule-passing candidate in another manzana) is strictly below it becomes
     ``SIN_MATCH``. A row with no competitor (``margen`` None) never abstains.
@@ -972,25 +1277,55 @@ def normalize_strict(
     ``gate_fallback`` when the geographic gate would leave no candidate, keep the text-ranked
                     candidates instead of abstaining (note added, ``nivel_precision`` capped at
                     ``manzana``). The confidence threshold and every rule still apply.
+    ``validate_outputs`` ``off`` | ``report`` | ``correct`` (default: the artifact's ``decision`` block, else
+                    ``off``): last step, :func:`cali_address.output_schema.validate_and_correct`. ``off`` leaves the
+                    output byte-identical; ``report`` counts violations per rule (into ``stats["output_validation"]``)
+                    without changing it; ``correct`` also applies the conservative corrections.
+
+    Calibrated mode (``cali_address.decision``): when the artifact directory carries ``decision.json`` and
+    ``reliability_calibrated.json``, every option left at ``None`` takes the file's neutral configuration
+    (``soft_rules``, ``max_soft``, ``gate_fallback``, ``ambiguity_delta`` 0, ``threshold`` = ``confianza_floor``), the
+    calibrated decision layer runs after the fidelity step, and the columns
+    :data:`CALIBRATED_OUTPUT_COLUMNS` are appended LAST. An explicit argument always wins. Without the pair nothing
+    changes (the output is byte-identical to the historical one).
+
+    ``threshold`` is the confidence cut-off (default: the normalizer's, or ``confianza_floor`` in calibrated mode).
+    ``calibration_sink``, when a list, receives one dict per row with the 24 calibrated-model features plus the
+    cadastral codes of the chosen document (``None`` for non-OK rows): the input of ``scripts/fit_decision.py``.
     """
     original_raws, refined = raws, None
     if refine_input:
         refined = [refine_address(r) if isinstance(r, str) else None for r in raws]
         raws = [r if rr is None else rr.text for rr, r in zip(refined, raws)]
     decision = getattr(normalizer, "decision", None) or {}
+    calibrated = _calibrated_for(normalizer)
+    apply_exclusions(normalizer, _excluded_fuentes(None if calibrated is None else calibrated[1]))
+    if calibrated is not None:
+        neutral = calibrated[1]["neutral"]
+        decision = {**decision, "soft_rules": neutral["soft_rules"], "max_soft": neutral["max_soft"],
+                    "gate_fallback": neutral["gate_fallback"]}
+        if ambiguity_delta is _AMBIGUITY_UNSET:
+            ambiguity_delta = neutral["ambiguity_delta"]
+        if threshold is None:
+            threshold = calibrated[1]["confianza_floor"]
+    if ambiguity_delta is _AMBIGUITY_UNSET:
+        ambiguity_delta = DEFAULT_AMBIGUITY_DELTA
+    collect = calibrated is not None or calibration_sink is not None
     soft_rules = normalize_soft_rules(decision.get("soft_rules") if soft_rules is None else soft_rules)
     max_soft = validate_max_soft(decision.get("max_soft", 1) if max_soft is None else max_soft)
     gate_fallback = bool(decision.get("gate_fallback", False) if gate_fallback is None else gate_fallback)
+    validate_outputs = check_validate_outputs(decision.get("validate_outputs", "off") if validate_outputs is None else validate_outputs)
     counters = {
         "filas_con_lugar": 0, "filas_con_reja": 0, "candidatos_descartados": 0,
         "mejor_candidato_cambiado": 0, "filas_sin_candidato_tras_reja": 0,
-        "texto_limpiado": 0, "parseable_tras_limpiar": 0,
+        "texto_limpiado": 0, "parseable_tras_limpiar": 0, "rescatadas_gramatica": 0,
     }
     rows: list[dict | None] = [None] * len(raws)
     detections: list[Detection | None] = [None] * len(raws)
     queries: list[str | None] = [None] * len(raws)
     parses: list[object] = [None] * len(raws)
     to_model: list[int] = []
+    rescued_text: dict[int, str] = {}  # row -> text the grammar rescue parsed (fidelity judges the door against it)
     feats: list[dict | None] = [None] * len(raws)
     reliability = getattr(normalizer, "reliability", None)
 
@@ -1013,6 +1348,13 @@ def normalize_strict(
                 text, parsed = str(raw), fallback
         elif parsed.parse_ok and text != str(raw) and not parse_address(str(raw)).parse_ok:
             counters["parseable_tras_limpiar"] += 1
+        if not parsed.parse_ok:
+            # Only rows the grammar already rejected reach the rescue, so no parseable address can change.
+            rescued = _rescue_parse(text, str(raw))
+            if rescued is not None:
+                text, parsed = rescued
+                rescued_text[i] = text
+                counters["rescatadas_gramatica"] += 1
         if not parsed.parse_ok:
             rows[i] = _empty_result(
                 raw, "NO_PARSEABLE",
@@ -1038,13 +1380,20 @@ def normalize_strict(
                 min_struct, plate_tolerance, counters,
                 barrio_buffer_m, zone_buffer_m, gate_escalate,
                 reliability, feats, i, ambiguity_delta,
-                soft_rules, max_soft, gate_fallback,
+                soft_rules, max_soft, gate_fallback, threshold, collect,
             )
 
+    fidelity_raws = [rescued_text.get(i, r) for i, r in enumerate(original_raws)]
     for i, row in enumerate(rows):
         cleaned = detections[i].cleaned_text if detections[i] is not None else None
-        rows[i] = _apply_fidelity(row, original_raws[i], cleaned)
-    _apply_catalog_status(normalizer, rows, parses)
+        # A rescued row is judged against the text the rescue parsed: spelled-out ordinals (`sexta` -> 6), CAR -> KR and a
+        # moved tower are the documented rewrite, not drift of the pipeline.
+        rows[i] = _apply_fidelity(row, fidelity_raws[i], None if i in rescued_text else cleaned)
+    keys = _catalog_keys_getter(normalizer)
+    if collect:
+        _apply_calibrated_decision(
+            normalizer, rows, parses, detections, fidelity_raws, calibrated, keys, calibration_sink, stats)
+    _apply_catalog_status(normalizer, rows, parses, keys)
     if feature_sink is not None:
         feature_sink.extend(feats)
     if stats is not None:
@@ -1052,9 +1401,16 @@ def normalize_strict(
     frame = pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
     frame["selected_doc_id"] = pd.array(frame["selected_doc_id"], dtype="Int64")
     frame["override_rejected"] = frame["override_rejected"].astype(bool)
+    frame = _append_source_columns(normalizer, frame)
     if refined is not None:
         frame["direccion_entrada"] = list(original_raws)
         frame["refine_changes"] = ["" if rr is None else ", ".join(rr.changes) for rr in refined]
+    if calibrated is not None:
+        frame = _append_calibrated_columns(frame, rows)
+    if validate_outputs != "off":
+        frame, validation = validate_and_correct(frame, validate_outputs)
+        if stats is not None:
+            stats["output_validation"] = validation.to_dict()
     return frame
 
 
@@ -1118,8 +1474,15 @@ def _build_row(
     reliability=None, feats: list | None = None, index: int = 0,
     ambiguity_delta: float = DEFAULT_AMBIGUITY_DELTA,
     soft_rules: frozenset = frozenset(), max_soft: int = 1, gate_fallback: bool = False,
+    threshold: float | None = None, calib: bool = False,
 ) -> dict:
-    """Score one already-parsed row: fuse, gate, threshold, then apply the rules."""
+    """Score one already-parsed row: fuse, gate, threshold, then apply the rules.
+
+    ``threshold`` is the confidence cut-off (``None`` = the normalizer's own; passed explicitly so the shared
+    normalizer is never mutated). ``calib`` adds the private ``_calib`` stash (calibrated-model features and what a
+    downgrade needs) to an OK row; :func:`_apply_calibrated_decision` or ``normalize_strict`` pops it.
+    """
+    cutoff = normalizer.threshold if threshold is None else threshold
     # Same unit rendering as OK rows: only recognised units, never the free text.
     rule_base = canonical(parsed, style="spaced", with_complement=False)
     rule_complement = render_complement(parsed.complement_text) if rule_base else None
@@ -1135,7 +1498,7 @@ def _build_row(
     struct_by_doc = {int(docs[s]): float(struct_row[s]) for s in slots}
     if not candidates:
         return _empty_result(
-            raw, "SIN_MATCH", f"confianza 0.00 < umbral {normalizer.threshold:.2f}",
+            raw, "SIN_MATCH", f"confianza 0.00 < umbral {cutoff:.2f}",
             rule_canonical, detection, complement=rule_complement,
         )
 
@@ -1166,10 +1529,10 @@ def _build_row(
         counters["mejor_candidato_cambiado"] += 1
 
     confidence = float(min(max(best.score, 0.0), 1.0))
-    if confidence < normalizer.threshold:
+    if confidence < cutoff:
         return _empty_result(
             raw, "SIN_MATCH",
-            f"confianza {confidence:.2f} < umbral {normalizer.threshold:.2f}",
+            f"confianza {confidence:.2f} < umbral {cutoff:.2f}",
             rule_canonical, detection, complement=rule_complement,
         )
 
@@ -1197,7 +1560,7 @@ def _build_row(
         )
 
     margen_manzana, margen_predio, n_competidores = _competition(
-        normalizer, kept, best, parsed, struct_by_doc, min_struct, plate_tolerance, soft_rules, max_soft,
+        normalizer, kept, best, parsed, struct_by_doc, min_struct, plate_tolerance, soft_rules, max_soft, threshold,
     )
     if ambiguity_delta > 0 and margen_manzana is not None and margen_manzana < ambiguity_delta:
         return _empty_result(
@@ -1209,6 +1572,7 @@ def _build_row(
     point_lon, point_lat, point_is_parcel = _reported_point(normalizer, best)
     predial = _clean_code(normalizer._predial[best.doc])
     manzana = _clean_code(normalizer._manzana[best.doc])
+    cadastral_predial, cadastral_manzana = predial, manzana
     nivel = _precision_level(parsed)
     notes: list[str] = []
     approximations = soft + [note for note, _reason, _level in caps if note]
@@ -1319,13 +1683,24 @@ def _build_row(
         n_predios=n_predios, nivel=nivel_model, gate_applied=gate_label is not None,
         margen_manzana=margen_manzana, margen_predio=margen_predio, n_competidores=n_competidores,
     )
+    if reliability is not None and _SOURCE_FEATURE in getattr(reliability, "feature_names", ()):
+        # opt-in artifact feature (fit_reliability.py --source-feature); never computed for the shipped artifacts
+        source_docs = getattr(normalizer, "_fuente", None)
+        features[_SOURCE_FEATURE] = _source_feature_value(None if source_docs is None else source_docs[best.doc])
     if feats is not None:
         feats[index] = features
     conf_predio = conf_manzana = None
     if reliability is not None:
         pp, pm = reliability.predict(features)
         conf_predio, conf_manzana = round(pp, 3), round(pm, 3)
-    return {
+    stash = None
+    if calib:
+        stash = _calibration_stash(
+            normalizer, kept, best, parsed, features, soft, guard_caps, gate_overridden,
+            cadastral_predial, cadastral_manzana,
+        )
+        stash.update({"rule_canonical": rule_canonical, "rule_complement": rule_complement})
+    row = {
         "direccion_entrada": raw,
         "estado": "OK",
         "motivo": motivo,
@@ -1357,6 +1732,9 @@ def _build_row(
         "_catalog_exact": not guard_caps and not soft and not caps and gate_overridden is None and parsed.plate is not None,
         "_catalog_shared": n_predios > 1,
     }
+    if stash is not None:
+        row["_calib"] = stash
+    return row
 
 
 def load_gazetteer(basemaps_dir: str, warn=None) -> Gazetteer | None:

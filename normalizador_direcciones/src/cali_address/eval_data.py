@@ -1,7 +1,4 @@
-"""Loading and sampling of the five private evaluation datasets (``source_a`` .. ``source_e``).
-
-The workbooks are not shipped. The context directory defaults to ``context/`` and each file
-name can be overridden with ``CALI_EVAL_SOURCE_<A..E>_FILE``.
+"""Loading and sampling of the five external evaluation datasets in ``context/``.
 
 Column names in these workbooks carry accents and stray whitespace, so every
 column is matched on an ASCII-folded, lowercased, stripped form (prefix match).
@@ -15,10 +12,7 @@ import unicodedata
 
 import pandas as pd
 
-__all__ = [
-    "DATASETS", "DatasetSpec", "default_context_dir", "norm_col", "pick_col", "load_dataset",
-    "sample_dataset",
-]
+__all__ = ["DATASETS", "DatasetSpec", "norm_col", "pick_col", "load_dataset", "sample_dataset"]
 
 SEED = 42
 SAMPLE_N = 500
@@ -74,72 +68,53 @@ class DatasetSpec:
         self.note = note
 
 
-def default_context_dir(root: str | None = None) -> str:
-    """Directory holding the private workbooks: ``CALI_EVAL_CONTEXT_DIR`` or ``<root>/context``."""
-    return os.environ.get("CALI_EVAL_CONTEXT_DIR") or os.path.join(root or os.getcwd(), "context")
-
-
-def _env_file(var: str, default: str) -> str:
-    """File name of one private source: environment variable override, else a generic default."""
-    return os.environ.get(var, default)
-
-
-def _env_sheet(var: str, default: str) -> str:
-    """Sheet name of one private source: environment variable override, else a generic default."""
-    return os.environ.get(var, default)
-
-
-# File names and sheet layout of the private evaluation workbooks are deployment
-# specific. Override each file with ``CALI_EVAL_SOURCE_<A..E>_FILE`` (a name relative to the
-# context directory, or an absolute path) and ``CALI_EVAL_SOURCE_<A..E>_SHEET`` for the sheet.
-# Defaults are generic placeholders.
 DATASETS: list[DatasetSpec] = [
     DatasetSpec(
-        "source_a",
-        _env_file("CALI_EVAL_SOURCE_A_FILE", "source_a.xlsx"),
-        _env_sheet("CALI_EVAL_SOURCE_A_SHEET", "Sheet1"), 0,
+        "fasecolda",
+        "20260821 BD Inmuebles asegurados Cali - Fasecolda.xlsx",
+        "EXPUESTOS", 0,
         address_col="direccion",
         normalized_col="direccion_normalizada",
         lat_col="latitud (y) wgs84",
         lon_col="longitud (x) wgs 84",
-        note="Insured-property register. Has its own normalized column and WGS84 coordinates.",
+        note="Insured properties (Fasecolda). Has its own normalized column and WGS84 coordinates.",
     ),
     DatasetSpec(
-        "source_b",
-        _env_file("CALI_EVAL_SOURCE_B_FILE", "source_b.xlsx"),
-        _env_sheet("CALI_EVAL_SOURCE_B_SHEET", "Sheet1"), 0,
+        "rud",
+        "RUD VALLE DEL CAUCA - CALI.xlsx",
+        "RUD MUNICIPIO", 0,
         address_col="direccion_bien",
-        note="Registry of affected households. No coordinates; several addresses per cell.",
+        note="Single disaster victims registry (RUD). No coordinates; several addresses per cell.",
     ),
     DatasetSpec(
-        "source_c",
-        _env_file("CALI_EVAL_SOURCE_C_FILE", "source_c.xlsx"),
-        _env_sheet("CALI_EVAL_SOURCE_C_SHEET", "Sheet1"), 2,
+        "inspecciones",
+        "inspecciones_2026-09-23_17-27.xlsx",
+        "inspecciones", 2,
         address_col="direccion",
         normalized_col="direccion_norm",
         coords_col="coords",
         accuracy_col="gps_error_m",
-        note=("Field structural inspections. `coords` is a 'lat, lon' string filled for most "
+        note=("Field structural inspections. `coords` is a 'lat, lon' string filled for ~93% of "
               "rows; `gps_error_m` carries the reported GPS error."),
     ),
     DatasetSpec(
-        "source_d",
-        _env_file("CALI_EVAL_SOURCE_D_FILE", "source_d.xlsx"),
-        _env_sheet("CALI_EVAL_SOURCE_D_SHEET", "Sheet1"), 5,
+        "stickers",
+        "stickers_2026-09-23_20-23.xlsx",
+        "stickers", 5,
         address_col="direccion",
         lat_col="lat",
         lon_col="lng",
         accuracy_col="accuracy",
-        note=("Field forms captured on a mobile app; lat/lng from device GPS. The "
+        note=("Habitability stickers captured on a mobile app; lat/lng from device GPS. The "
               "`accuracy` column exists but is empty in the delivered file."),
     ),
     DatasetSpec(
-        "source_e",
-        _env_file("CALI_EVAL_SOURCE_E_FILE", "source_e.xlsx"),
-        _env_sheet("CALI_EVAL_SOURCE_E_SHEET", "Sheet1"), 2,
+        "acciones",
+        "acciones_candidatos_demolicion_2026-09-23_20-25.xlsx",
+        "acciones", 2,
         address_col="direccion",
         sample_n=10_000,  # only 78 rows exist -> all of them are used
-        note="Small list of candidate properties. Only 78 rows, so the whole dataset is evaluated.",
+        note="Demolition candidates. Only 78 rows, so the whole dataset is evaluated.",
     ),
 ]
 

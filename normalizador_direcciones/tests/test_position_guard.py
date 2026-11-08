@@ -281,8 +281,8 @@ def test_unit_differing_on_both_sides_caps_at_lote(kind):
 
 @pytest.mark.parametrize("kind", ["TO", "BLQ", "CA", "AGR"])
 def test_unit_only_in_the_cadastre_does_not_cap(kind):
-    # measured on the dev set: when the input names no unit, the cadastral predial of such rows was almost always right
-    # on gold rows, so withholding it would throw away correct predios
+    # measured on the dev set: when the input names no unit, the cadastral predial of such rows was right
+    # for 72 of 73 gold rows, so withholding it would throw away correct predios
     assert g("CL 987 # 654 - 20", f"CL 987 # 654 - 20 {kind} 2") == CLEAN
 
 

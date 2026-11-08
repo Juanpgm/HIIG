@@ -15,7 +15,7 @@ workbooks ARE the test set, so they are **never** read here. Instead:
     - *hard*: fresh corruptions of the same held-out documents at
       `HARD_INTENSITY` times the nominal corruption strength. Field text is
       messier than the training augmentation, and on the in-distribution pool
-      alone retrieval is already very accurate, so the reranking terms have almost
+      alone retrieval is already ~94 % top-1, so the reranking terms have almost
       nothing left to explain and the grid search degenerates onto the cosine
       term. The hard pool restores a regime where the text and structure terms
       are informative, without ever looking at the test set.
@@ -30,7 +30,7 @@ Two design decisions are declared up front, before any test-set number is looked
 at, and their cost is reported:
 
 1. **`geo` weight is constrained to >= MIN_GEO_WEIGHT.** On in-distribution
-   queries the retrieval head alone is already very accurate, so a grid search that
+   queries the retrieval head alone is already ~94 % top-1, so a grid search that
    maximizes in-distribution top-1 drives the geographic term to zero: it has
    nothing left to fix. The term exists to suppress geographically absurd
    candidates on far messier field text, i.e. to shorten the error tail rather
@@ -84,7 +84,10 @@ ART = os.path.join(ROOT, "artifacts")
 
 from cali_address.augment import corrupt, corrupt_many  # noqa: E402
 from cali_address.inference import GEO_TAU_M, AddressNormalizer  # noqa: E402
+from cali_address.model import PAD, VOCAB  # noqa: E402
 from cali_address.paths import resolve_artifacts_dir, shared_path  # noqa: E402
+
+_ID_TO_CHAR = {i: ch for ch, i in VOCAB.items()}
 
 TUNE_SEED = 1234
 N_TUNE = int(os.environ.get("N_TUNE", "10000"))
@@ -151,16 +154,108 @@ def make_junk(n: int, rng: random.Random) -> list[str]:
     return out
 
 
-def replay_validation_queries(
-    docs: pd.DataFrame, n_variants: int, seed: int, q_is_val: np.ndarray, q_doc: np.ndarray
+def n_variants_of(q_doc: np.ndarray, q_source: np.ndarray | None, n_docs: int) -> int:
+    """Synthetic variants per document. Official queries (``q_source == 1``) are not part of that count."""
+    if n_docs <= 0:
+        raise ValueError("n_variants_of needs at least one document")
+    n_synthetic = len(q_doc) if q_source is None else int((np.asarray(q_source) == 0).sum())
+    return n_synthetic // n_docs
+
+
+def decode_tokens(ids: np.ndarray) -> str:
+    """Inverse of ``model.encode_text``: ids -> text, stopping at the first padding id.
+
+    Characters outside the vocabulary (UNK) come back as ``?``; they were already lost at encode time.
+    """
+    out = []
+    for i in np.asarray(ids).tolist():
+        if i == PAD:
+            break
+        out.append(_ID_TO_CHAR.get(int(i), "?"))
+    return "".join(out)
+
+
+def official_validation_texts(
+    q_tokens_raw: np.ndarray, q_is_val: np.ndarray, q_source: np.ndarray
 ) -> tuple[list[str], np.ndarray]:
-    """Regenerate the exact noisy variants and return only the validation ones.
+    """Texts of the VALIDATION queries that came from official strings (``q_source == 1``).
+
+    Only tokens were stored for them (not the strings), so the pre-normalised view that the encoder saw
+    is decoded: it is the closest thing to the original official text that survives in ``train_data.npz``.
+    """
+    keep = np.flatnonzero(np.asarray(q_is_val, dtype=bool) & (np.asarray(q_source) == 1))
+    return [decode_tokens(q_tokens_raw[i]) for i in keep], keep
+
+
+def stratified_pick(rng: np.random.Generator, n_syn: int, n_off: int, n_tune: int) -> tuple[np.ndarray, np.ndarray]:
+    """Sorted positions to sample from the synthetic and the official validation pools.
+
+    Without official queries this is exactly the historical single draw. With them, half of ``n_tune``
+    comes from the official pool and the rest from the synthetic one; when a pool is too small the other
+    one takes the remainder, and the totals never exceed what exists.
+    """
+    n_tune = max(int(n_tune), 0)
+    empty = np.empty(0, dtype=np.int64)
+    if n_off <= 0:
+        k = min(n_tune, n_syn)
+        return (np.sort(rng.choice(n_syn, size=k, replace=False)) if k > 0 else empty), empty
+    k_off = min(n_tune // 2, n_off)
+    k_syn = min(n_tune - k_off, n_syn)
+    k_off = min(n_tune - k_syn, n_off)
+    syn = np.sort(rng.choice(n_syn, size=k_syn, replace=False)) if k_syn > 0 else empty
+    off = np.sort(rng.choice(n_off, size=k_off, replace=False)) if k_off > 0 else empty
+    return syn, off
+
+
+def select_tuning_positives(docs: pd.DataFrame, data, n_tune: int, rng: np.random.Generator) -> dict:
+    """The positives the tuner scores: VALIDATION queries only (``q_is_val``), never training ones.
+
+    Old data directories (no ``q_source`` or all synthetic) behave exactly as before: replay the synthetic
+    variants and sample ``n_tune`` of them. When official strings are present the sample is a stratified
+    mix, half synthetic and half official validation queries, so the confidence threshold is tuned on the
+    kind of text the index was built from as well as on the corruptions. Returns ``texts``, ``truth``
+    (document ids), ``source`` (0 synthetic / 1 official), the two counts and the candidate pool sizes.
+    """
+    q_doc, q_is_val = data["q_doc"], data["q_is_val"]
+    q_source = data["q_source"] if "q_source" in data else None
+    has_official = q_source is not None and bool((np.asarray(q_source) == 1).any())
+    n_variants = n_variants_of(q_doc, q_source, len(docs))
+    texts, keep_idx = replay_validation_queries(docs, n_variants, 42, q_is_val, q_doc, q_source)
+    if has_official:
+        off_texts, off_idx = official_validation_texts(data["q_tokens_raw"], q_is_val, q_source)
+    else:
+        off_texts, off_idx = [], np.empty(0, dtype=np.int64)
+    syn_pick, off_pick = stratified_pick(rng, len(texts), len(off_texts), n_tune)
+    return {
+        "texts": [texts[i] for i in syn_pick] + [off_texts[i] for i in off_pick],
+        "truth": np.concatenate([q_doc[keep_idx][syn_pick], q_doc[off_idx][off_pick]]).astype(np.int64),
+        "source": np.concatenate([np.zeros(len(syn_pick), np.uint8), np.ones(len(off_pick), np.uint8)]),
+        "n_synthetic": int(len(syn_pick)), "n_official": int(len(off_pick)),
+        "pool_synthetic": int(len(texts)), "pool_official": int(len(off_texts)),
+        "n_variants": int(n_variants),
+    }
+
+
+def replay_validation_queries(
+    docs: pd.DataFrame, n_variants: int, seed: int, q_is_val: np.ndarray, q_doc: np.ndarray,
+    q_source: np.ndarray | None = None,
+) -> tuple[list[str], np.ndarray]:
+    """Regenerate the exact noisy variants and return only the (synthetic) validation ones.
 
     `build_training_arrays` walks the documents in order and draws `n_variants`
     corruptions per document from a single seeded `random.Random`, so replaying
     the same loop reproduces the same strings. The assertion guards the ordering
     assumption.
+
+    Arrays built with official queries append them AFTER the synthetic block (``q_source == 1``); pass
+    ``q_source`` and only that leading block is replayed (a different layout raises ``ValueError``).
     """
+    if q_source is not None and bool((np.asarray(q_source) == 1).any()):
+        q_source = np.asarray(q_source)
+        n_syn = int((q_source == 0).sum())
+        if (q_source[:n_syn] != 0).any():
+            raise ValueError("official queries are not stored after the synthetic block; cannot replay")
+        q_is_val, q_doc = q_is_val[:n_syn], q_doc[:n_syn]
     assert np.array_equal(q_doc, np.repeat(np.arange(len(docs)), n_variants)), \
         "query ordering is not doc-major; cannot replay the augmentation"
     rng = random.Random(seed)
@@ -259,20 +354,18 @@ def main(argv: list[str] | None = None) -> None:
     t0 = time.time()
     docs = pd.read_parquet(shared_path("catastro_docs.parquet", ART))
     data = np.load(shared_path("train_data.npz", ART), allow_pickle=True)
-    q_doc, q_is_val = data["q_doc"], data["q_is_val"]
-    n_variants = len(q_doc) // len(docs)
-    print(f"documents={len(docs):,} variants/doc={n_variants} "
-          f"val queries={int(q_is_val.sum()):,}", flush=True)
-
-    texts, keep_idx = replay_validation_queries(docs, n_variants, 42, q_is_val, q_doc)
-    truth_all = q_doc[keep_idx]
-    print(f"replayed {len(texts):,} held-out validation queries in {time.time()-t0:.0f}s")
-    print("  examples:", [texts[i] for i in (0, 1, 2)], flush=True)
+    q_is_val = data["q_is_val"]
+    print(f"documents={len(docs):,} val queries={int(q_is_val.sum()):,}", flush=True)
 
     rng_np = np.random.default_rng(TUNE_SEED)
-    pick = np.sort(rng_np.choice(len(texts), size=min(N_TUNE, len(texts)), replace=False))
-    pos_texts = [texts[i] for i in pick]
-    pos_truth = truth_all[pick]
+    sample = select_tuning_positives(docs, data, N_TUNE, rng_np)
+    pos_texts, pos_truth = sample["texts"], sample["truth"]
+    if not pos_texts:
+        raise SystemExit("no validation queries to tune on (q_is_val is empty)")
+    print(f"replayed {sample['pool_synthetic']:,} synthetic and {sample['pool_official']:,} official held-out "
+          f"validation queries in {time.time()-t0:.0f}s (variants/doc={sample['n_variants']})")
+    print(f"sampled positives: {sample['n_synthetic']:,} synthetic + {sample['n_official']:,} official", flush=True)
+    print("  examples:", pos_texts[:3], flush=True)
 
     rng_py = random.Random(TUNE_SEED)
 
@@ -448,7 +541,9 @@ def main(argv: list[str] | None = None) -> None:
                          "never a training positive); their exact noisy variants replayed",
             "negatives": "synthetic non-address strings generated from a fixed vocabulary "
                          "inside scripts/tune_threshold.py",
-            "queries_replayed": int(len(texts)),
+            "queries_replayed": int(sample["pool_synthetic"] + sample["pool_official"]),
+            "positives_synthetic": sample["n_synthetic"],
+            "positives_official": sample["n_official"],
             "positives_in_distribution": int(len(pos_texts)),
             "positives_hard": int(len(hard_texts)),
             "hard_intensity": HARD_INTENSITY,

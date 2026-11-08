@@ -44,7 +44,6 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, Response, Uploa
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .. import __version__
 from ..gazetteer import ZONE_BUFFER_M
 from ..inference import AddressNormalizer
 from ..catalog import keys_for as catalog_keys_for
@@ -455,7 +454,7 @@ direccion, luego `POST /api/v1/normalize`. Si ya tiene los datos en memoria use
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Normalizador de direcciones - Cali",
-        version=__version__,
+        version="1.0.0",
         description=DESCRIPTION,
         lifespan=lifespan,
     )

@@ -10,11 +10,21 @@ absent from the experiment directory.
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import os
 
 __all__ = [
+    "INDEX_MARKER",
+    "INDEX_FILES",
+    "PRE_NORMALIZE_KEY",
+    "IndexFileMissingError",
+    "IndexMetaError",
+    "is_index_file",
+    "is_index_dir",
+    "read_index_meta",
+    "read_pre_normalize_flag",
     "PROJECT_ROOT",
     "DEFAULT_ARTIFACTS_DIR",
     "ENV_ARTIFACTS_DIR",
@@ -70,6 +80,29 @@ SHARED_INPUTS = (
 )
 
 
+#: Completeness marker of a built index directory (written LAST by ``scripts/build_index.py``). Its
+#: presence makes the directory self-contained: see :func:`shared_path`.
+INDEX_MARKER = "index_meta.json"
+
+#: Key of ``index_meta.json`` that opts the artifact in to ``parser.PRE_NORMALIZE_SEPARATES_LETTERS``.
+PRE_NORMALIZE_KEY = "pre_normalize_separates_letters"
+
+#: Files that belong to an index. In a directory with :data:`INDEX_MARKER` they are never taken from
+#: the default directory. ``plate_negatives*.npy`` is a glob (the cache name carries its settings).
+INDEX_FILES = (
+    "catastro_docs.parquet",
+    OWN_CENTROIDS_FILENAME,
+    "train_data.npz",
+    "spatial_negatives.npy",
+    "catastro.parquet",
+    "nomenclatura_units.parquet",
+    "plate_negatives*.npy",
+)
+
+#: The one index file that is optional at runtime (consumers treat "absent" as "not available").
+OPTIONAL_INDEX_FILE = "catastro.parquet"
+
+
 #: Model-dependent files. They never fall back on their own (a retrained experiment that lost its
 #: ``model.pt`` must fail loudly); only an experiment that declares ``"inherits_model": true`` in its
 #: ``experiment.json`` (a decision-layer-only experiment) reads them from the default directory.
@@ -102,12 +135,87 @@ def resolve_artifacts_dir(explicit: str | None = None) -> str:
     return os.path.abspath(chosen)
 
 
+class IndexFileMissingError(FileNotFoundError):
+    """A directory that declares an index (``index_meta.json``) lacks one of the index's files."""
+
+
+class IndexMetaError(ValueError):
+    """``index_meta.json`` exists but cannot be used (not valid JSON, not an object, bad field)."""
+
+
+def is_index_file(name: str) -> bool:
+    """Whether ``name`` is one of :data:`INDEX_FILES` (the ``plate_negatives*.npy`` entry is a glob)."""
+    return any(fnmatch.fnmatchcase(name, pattern) for pattern in INDEX_FILES)
+
+
+def is_index_dir(artifacts_dir: str | None = None) -> bool:
+    """Whether the directory declares an index, i.e. contains the :data:`INDEX_MARKER` file.
+
+    Only existence counts: a broken marker must not switch the guard off (see :func:`read_index_meta`).
+    """
+    base = artifacts_dir or DEFAULT_ARTIFACTS_DIR
+    return os.path.isfile(os.path.join(base, INDEX_MARKER))
+
+
+def read_index_meta(artifacts_dir: str | None = None) -> dict | None:
+    """The parsed ``index_meta.json`` of a directory, or ``None`` when it has no marker.
+
+    Raises :class:`IndexMetaError` (naming the file) when the marker is empty, not valid UTF-8 / JSON,
+    or not a JSON object. ``{}`` is valid: the directory still declares an index.
+    """
+    base = artifacts_dir or DEFAULT_ARTIFACTS_DIR
+    path = os.path.join(base, INDEX_MARKER)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError) as exc:     # JSONDecodeError and UnicodeDecodeError are ValueErrors
+        raise IndexMetaError(f"{INDEX_MARKER} in {base} is unreadable or not valid JSON: {exc}") from exc
+    if not isinstance(meta, dict):
+        raise IndexMetaError(f"{INDEX_MARKER} in {base} must be a JSON object, got {type(meta).__name__}")
+    return meta
+
+
+def read_pre_normalize_flag(artifacts_dir: str | None = None) -> bool | None:
+    """The artifact's ``pre_normalize_separates_letters`` setting; ``None`` when it does not say.
+
+    ``None`` means no marker or no such key. A value that is not a JSON boolean is an error: ``"false"``
+    is truthy, so it must never be coerced.
+    """
+    meta = read_index_meta(artifacts_dir)
+    if meta is None or PRE_NORMALIZE_KEY not in meta:
+        return None
+    value = meta[PRE_NORMALIZE_KEY]
+    if not isinstance(value, bool):
+        raise IndexMetaError(
+            f"{PRE_NORMALIZE_KEY} in {INDEX_MARKER} must be true or false, got {value!r} "
+            f"({os.path.join(artifacts_dir or DEFAULT_ARTIFACTS_DIR, INDEX_MARKER)})"
+        )
+    return value
+
+
 def shared_path(name: str, artifacts_dir: str | None = None) -> str:
-    """Path of a shared input: experiment dir if present there, else the default dir."""
+    """Path of a shared input: experiment dir if present there, else the default dir.
+
+    Exception: a directory that declares an index (it contains :data:`INDEX_MARKER`) is
+    self-contained for the :data:`INDEX_FILES`. For those names the local path is returned and the
+    default directory is NEVER consulted; a missing file raises :class:`IndexFileMissingError`,
+    except ``catastro.parquet`` (optional: its non-existent local path lets consumers get ``None``).
+    Every other name (``gazetteer.pkl``...) keeps the fallback.
+    """
     base = artifacts_dir or DEFAULT_ARTIFACTS_DIR
     local = os.path.join(base, name)
     if os.path.exists(local):
         return local
+    if is_index_file(name) and is_index_dir(base):
+        if name == OPTIONAL_INDEX_FILE:
+            return local
+        raise IndexFileMissingError(
+            f"{name} is missing from {os.path.abspath(base)}, which declares an index ({INDEX_MARKER}). "
+            "An index directory never falls back to the default artifacts directory: rebuild the index "
+            "or copy the file next to the marker."
+        )
     return os.path.join(DEFAULT_ARTIFACTS_DIR, name)
 
 
@@ -162,7 +270,13 @@ def check_artifacts(artifacts_dir: str | None = None) -> tuple[list[str], list[s
     ``shared_path``), so an experiment directory that inherits the model is judged the same way.
     """
     base = artifacts_dir or DEFAULT_ARTIFACTS_DIR
-    resolvers = {"model.pt": model_path, "catastro_emb.pt": model_path, "catastro_docs.parquet": shared_path}
+    def docs_path(name: str, directory: str) -> str:
+        try:
+            return shared_path(name, directory)
+        except IndexFileMissingError:        # a declared index lacking its docs: report it, do not raise
+            return os.path.join(directory, name)
+
+    resolvers = {"model.pt": model_path, "catastro_emb.pt": model_path, "catastro_docs.parquet": docs_path}
     required = [resolvers[name](name, base) for name in REQUIRED_ARTIFACTS]
     missing = [p for p in required if not os.path.isfile(p)]
     optional = [p for p in (os.path.join(base, name) for name in OPTIONAL_ARTIFACTS) if not os.path.isfile(p)]

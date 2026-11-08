@@ -55,7 +55,7 @@ ArcGIS.
 
 ```bash
 curl -s -G "https://<app>.up.railway.app/arcgis/rest/services/CaliNormalizador/GeocodeServer/findAddressCandidates" \
-  --data-urlencode "SingleLine=Carrera7#14-58" \
+  --data-urlencode "SingleLine=Carrera1#9-02" \
   --data-urlencode "f=json"
 ```
 
@@ -64,27 +64,25 @@ curl -s -G "https://<app>.up.railway.app/arcgis/rest/services/CaliNormalizador/G
   "spatialReference": {"wkid": 4326, "latestWkid": 4326},
   "candidates": [
     {
-      "address": "KR 7 # 14 - 58",
-      "location": {"x": -76.5300, "y": 3.4500},
+      "address": "KR 1 # 9 - 02",
+      "location": {"x": -76.534611, "y": 3.45256},
       "score": 96.9,
       "attributes": {
         "Status": "OK",
-        "Numero_Predial": "<NPN_30_DIGITOS>",
-        "Manzana": "<MANZANA_17_DIGITOS>",
+        "Numero_Predial": "760010100031100010001000000000",
+        "Manzana": "76001010003110001",
         "Barrio_Vereda": "San Pedro",
         "Comuna_Corregimiento": "Comuna 3",
         "Motivo": ""
       },
       "extent": {
-        "xmin": -76.5305, "ymin": 3.4495,
-        "xmax": -76.5295, "ymax": 3.4505
+        "xmin": -76.535111, "ymin": 3.45206,
+        "xmax": -76.534111, "ymax": 3.45306
       }
     }
   ]
 }
 ```
-
-Los valores de `numero_predial_nacional`, `manzana`, `lat` y `lon` de este ejemplo son marcadores ficticios; no corresponden a ningún predio real.
 
 `extent` es una caja sintetica de unos 55 m de lado alrededor del centroide: un
 centroide catastral no tiene extension propia, y `extent` solo se usa para que el
@@ -126,8 +124,8 @@ orden.
 curl -s -X POST "https://<app>.up.railway.app/arcgis/rest/services/CaliNormalizador/GeocodeServer/geocodeAddresses" \
   -H "Content-Type: application/json" \
   -d '{"records": [
-        {"attributes": {"OBJECTID": 1, "SingleLine": "Carrera7#14-58"}},
-        {"attributes": {"OBJECTID": 2, "SingleLine": "Calle 9 # 41-63, San Fernando"}},
+        {"attributes": {"OBJECTID": 1, "SingleLine": "Carrera1#9-02"}},
+        {"attributes": {"OBJECTID": 2, "SingleLine": "Calle 5 # 38-93, San Fernando"}},
         {"attributes": {"OBJECTID": 3, "SingleLine": "asdfqwer"}}
       ]}'
 ```
@@ -137,20 +135,20 @@ curl -s -X POST "https://<app>.up.railway.app/arcgis/rest/services/CaliNormaliza
   "spatialReference": {"wkid": 4326, "latestWkid": 4326},
   "locations": [
     {
-      "address": "KR 7 # 14 - 58",
-      "location": {"x": -76.5300, "y": 3.4500},
+      "address": "KR 1 # 9 - 02",
+      "location": {"x": -76.534611, "y": 3.45256},
       "score": 96.9,
-      "attributes": {"ResultID": 1, "Status": "OK", "Numero_Predial": "<NPN_30_DIGITOS>",
-                     "Manzana": "<MANZANA_17_DIGITOS>", "Barrio_Vereda": "San Pedro",
+      "attributes": {"ResultID": 1, "Status": "OK", "Numero_Predial": "760010100031100010001000000000",
+                     "Manzana": "76001010003110001", "Barrio_Vereda": "San Pedro",
                      "Comuna_Corregimiento": "Comuna 3", "Motivo": ""}
     },
     {
-      "address": "CL 9 # 41 - 63",
+      "address": "CL 5 # 38 - 93",
       "location": {"x": null, "y": null},
       "score": 0.0,
       "attributes": {"ResultID": 2, "Status": "SIN_MATCH", "Numero_Predial": "", "Manzana": "",
                      "Barrio_Vereda": "San Fernando Nuevo", "Comuna_Corregimiento": "Comuna 19",
-                     "Motivo": "placa 63 != 69"}
+                     "Motivo": "placa 93 != 69"}
     },
     {
       "address": "asdfqwer",
@@ -163,8 +161,6 @@ curl -s -X POST "https://<app>.up.railway.app/arcgis/rest/services/CaliNormaliza
   ]
 }
 ```
-
-Los valores de `numero_predial_nacional`, `manzana`, `lat` y `lon` de este ejemplo son marcadores ficticios; no corresponden a ningún predio real.
 
 Nota: en `locations` no se incluye `extent` (ArcGIS no lo espera en la respuesta
 de lote).
@@ -186,7 +182,7 @@ import arcpy
 import requests
 
 BASE = "https://<app>.up.railway.app"
-TABLA_ENTRADA = r"C:\datos\proyecto.gdb\tabla_ejemplo"   # tabla o feature class origen
+TABLA_ENTRADA = r"C:\datos\proyecto.gdb\inspecciones"   # tabla o feature class origen
 CAMPO_DIRECCION = "direccion"
 CAMPO_ID = "OBJECTID"
 SALIDA_GDB = r"C:\datos\proyecto.gdb"
@@ -313,8 +309,8 @@ def geocodificar_lote(direcciones):
     return salida
 
 
-print(geocodificar_una("Carrera7#14-58"))
-print(geocodificar_lote(["Carrera7#14-58", "Calle 9 # 41-63", "asdfqwer"]))
+print(geocodificar_una("Carrera1#9-02"))
+print(geocodificar_lote(["Carrera1#9-02", "Calle 5 # 38-93", "asdfqwer"]))
 ```
 
 El patron importante en ambas funciones es el mismo: **revisar

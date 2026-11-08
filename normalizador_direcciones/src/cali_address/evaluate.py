@@ -23,18 +23,103 @@ __all__ = [
     "position_tier_calibration",
     "POSITION_CALIBRATION_COLUMNS",
     "DIST_BUCKETS",
+    "LOT_LENGTH",
+    "predial_lot",
+    "lots_match",
+    "index_lots",
+    "add_lot_columns",
+    "STRICT_SUMMARY_COLUMNS",
 ]
 
 DIST_BUCKETS = (25, 50, 100, 250)
 
+#: A cadastral lot is the first 21 characters of a 30-digit NPN; the last 9 are the unit suffix.
+LOT_LENGTH = 21
+
 #: Columns produced by :func:`strict_summary`, one row per (dataset, estado)
-#: plus a pooled "ALL" dataset row per estado.
+#: plus a pooled "ALL" dataset row per estado. The lot-level columns are appended LAST so the
+#: older columns keep their position and values.
 STRICT_SUMMARY_COLUMNS = [
     "dataset", "estado", "n", "n_with_gt",
     "manzana_precision", "predial_precision", "idesc_text_agreement",
     "lost_correct", "lost_correct_share",
     "n_ok_sin_predial", "n_ok_sin_manzana",
+    "predial_lot_precision", "lot_present_in_index_share", "n_lot_missing_from_index",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Lot-level predial (NPN[:21])
+# ---------------------------------------------------------------------------
+def _blank(value) -> bool:
+    """True for None / NaN / pd.NA / blank text / the literal "nan"."""
+    if value is None or value is pd.NA:
+        return True
+    if isinstance(value, float) and value != value:
+        return True
+    text = str(value).strip()
+    return not text or text.lower() == "nan"
+
+
+def predial_lot(value) -> str | None:
+    """Lot (first 21 characters) of a predial code, or ``None`` when the code is not a valid one.
+
+    Valid means: made only of digits (after stripping whitespace) and at least 21 characters long, so 28, 29,
+    30 and longer codes all yield their first 21. Missing values (None, NaN, blank, "nan"), short codes,
+    codes with letters or separators, and non-string numbers other than integers yield ``None``. Codes are
+    never zero-padded here: a 29-digit code is taken as it is.
+    """
+    if _blank(value) or isinstance(value, (bool, np.bool_, float, np.floating)):
+        return None
+    text = str(value).strip()
+    if len(text) < LOT_LENGTH or not text.isascii() or not text.isdigit():
+        return None
+    return text[:LOT_LENGTH]
+
+
+def lots_match(a, b) -> bool:
+    """Both codes are valid lots (see :func:`predial_lot`) and their first 21 characters are equal.
+
+    Anything else is ``False``, including NaN/None on either side: the unit suffix is ignored, the lot is not.
+    """
+    la, lb = predial_lot(a), predial_lot(b)
+    return la is not None and la == lb
+
+
+def index_lots(npns) -> set[str]:
+    """Set of the valid lots among a collection of predial codes (invalid or missing ones are skipped)."""
+    lots = (predial_lot(v) for v in npns)
+    return {lot for lot in lots if lot is not None}
+
+
+def add_lot_columns(rows: pd.DataFrame, lots_in_index: set[str] | None) -> pd.DataFrame:
+    """Copy of ``rows`` with ``correct_predial_lot`` and ``lot_present_in_index`` appended as the last columns.
+
+    ``rows`` needs ``numero_predial_nacional``, ``gt_predial`` and ``has_gt``; existing columns are untouched.
+
+    * ``correct_predial_lot``: NaN without ground truth or when either code is blank (the same rows for which
+      ``correct_predial`` is NaN, so both precisions share a denominator); otherwise
+      ``lots_match(output, gt)``, which is ``False`` for a code that is not a valid lot.
+    * ``lot_present_in_index``: whether the ground-truth lot is among ``lots_in_index`` (the lots of the
+      index documents); NaN without ground truth, without a valid ground-truth lot or when ``lots_in_index``
+      is ``None``.
+    """
+    for col in ("numero_predial_nacional", "gt_predial", "has_gt"):
+        if col not in rows.columns:
+            raise KeyError(f"cannot add lot-level columns: '{col}' is missing from the rows")
+    out = rows.copy()
+    correct, present = [], []
+    for pred, gt, has_gt in zip(out["numero_predial_nacional"], out["gt_predial"], out["has_gt"]):
+        has_gt = bool(has_gt) if not _blank(has_gt) else False
+        if not has_gt or _blank(gt) or _blank(pred):
+            correct.append(float("nan"))
+        else:
+            correct.append(lots_match(pred, gt))
+        lot = predial_lot(gt) if has_gt else None
+        present.append(float("nan") if lot is None or lots_in_index is None else lot in lots_in_index)
+    out["correct_predial_lot"] = pd.Series(correct, index=out.index, dtype=object)
+    out["lot_present_in_index"] = pd.Series(present, index=out.index, dtype=object)
+    return out
 
 #: Columns produced by :func:`nivel_precision_breakdown`.
 NIVEL_BREAKDOWN_COLUMNS = ["nivel_precision", "n"]
@@ -124,14 +209,24 @@ def _strict_summary_group(dataset: str, estado: str, group: pd.DataFrame) -> dic
     if is_ok:
         manzana_precision = _share(group.loc[has_gt, "correct_manzana"])
         predial_precision = _share(group.loc[has_gt, "correct_predial"])
+        predial_lot_precision = (_share(group.loc[has_gt, "correct_predial_lot"])
+                                 if "correct_predial_lot" in group.columns else float("nan"))
         idesc_text_agreement = _share(group["text_agree_idesc"])
         lost_correct = 0
     else:
         manzana_precision = float("nan")
         predial_precision = float("nan")
+        predial_lot_precision = float("nan")
         idesc_text_agreement = float("nan")
         lost_correct = int(_bool_or_false(group["raw_top1_correct_manzana"]).sum())
     lost_correct_share = (lost_correct / n_with_gt) if n_with_gt else float("nan")
+    # Whether the ground-truth lot exists in the index at all: independent of estado, rows with GT only.
+    if "lot_present_in_index" in group.columns:
+        present = group.loc[has_gt, "lot_present_in_index"].dropna()
+        lot_share = _share(present)
+        n_lot_missing = int(sum(1 for v in present if not bool(v)))
+    else:
+        lot_share, n_lot_missing = float("nan"), 0
     return {
         "dataset": dataset, "estado": estado, "n": n, "n_with_gt": n_with_gt,
         "manzana_precision": manzana_precision, "predial_precision": predial_precision,
@@ -142,6 +237,9 @@ def _strict_summary_group(dataset: str, estado: str, group: pd.DataFrame) -> dic
         # (their correct_* is NaN) and counted here instead.
         "n_ok_sin_predial": _count_missing(group, "numero_predial_nacional") if is_ok else 0,
         "n_ok_sin_manzana": _count_missing(group, "manzana") if is_ok else 0,
+        "predial_lot_precision": predial_lot_precision,
+        "lot_present_in_index_share": lot_share,
+        "n_lot_missing_from_index": n_lot_missing,
     }
 
 
@@ -167,6 +265,11 @@ def strict_summary(df: pd.DataFrame) -> pd.DataFrame:
     manzana - i.e. the model *found* the parcel but a rule, the geo gate or the
     threshold discarded it. ``lost_correct_share`` divides that by ``n_with_gt``
     for the same estado, and is ``NaN`` when ``n_with_gt`` is 0.
+
+    Lot-level counterparts (appended last; NaN/0 when the optional ``correct_predial_lot`` /
+    ``lot_present_in_index`` columns are absent): ``predial_lot_precision`` (OK rows, same denominator as
+    ``predial_precision``), ``lot_present_in_index_share`` and ``n_lot_missing_from_index`` (rows with GT whose
+    ground-truth lot is / is not among the index documents' lots, any estado).
 
     Returns one row per ``(dataset, estado)`` actually present, plus the same
     breakdown pooled across every dataset under ``dataset == "ALL"``. Never

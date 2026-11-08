@@ -18,12 +18,13 @@ Usage
 -----
     PYTHONPATH=src python scripts/eval_strict.py --tag baseline
     PYTHONPATH=src python scripts/eval_strict.py --limit 50 --tag smoke
-    PYTHONPATH=src python scripts/eval_strict.py --datasets source_a,source_d
+    PYTHONPATH=src python scripts/eval_strict.py --datasets fasecolda,stickers
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
@@ -34,19 +35,23 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from cali_address import geo  # noqa: E402
+from cali_address.calibration_report import band_breakdown, monitoring_signals  # noqa: E402
 from cali_address.evaluate import (  # noqa: E402
+    add_lot_columns,
+    index_lots,
     motivo_breakdown,
     nivel_precision_breakdown,
     position_tier_calibration,
     strict_summary,
 )
+from cali_address.evaluate import _bool_or_false, _share  # noqa: E402
 from cali_address.inference import AddressNormalizer  # noqa: E402
 from cali_address.labels import select_quality  # noqa: E402
 from cali_address.experiment import is_frozen_path  # noqa: E402
 from cali_address.parser import match_key  # noqa: E402
 from cali_address.paths import resolve_artifacts_dir  # noqa: E402
 from cali_address.reliability import FEATURE_NAMES  # noqa: E402
-from cali_address.inference import normalize_soft_rules, validate_max_soft  # noqa: E402
+from cali_address.inference import check_validate_outputs, normalize_soft_rules, validate_max_soft  # noqa: E402
 from cali_address.service import DEFAULT_AMBIGUITY_DELTA, load_gazetteer, normalize_strict  # noqa: E402
 
 DEFAULT_ARTIFACTS_DIR = os.path.join(ROOT, "artifacts")
@@ -85,6 +90,17 @@ def _codes_equal(a, b) -> bool | float:
         width = max(len(a), len(b))
         return a.zfill(width) == b.zfill(width)
     return False
+
+
+def with_lot_columns(rows: pd.DataFrame, normalizer) -> pd.DataFrame:
+    """``rows`` plus the lot-level columns (``NPN[:21]``), appended after every existing column.
+
+    ``correct_predial_lot`` is the lot-level counterpart of ``correct_predial`` (the ground truth is cadastral
+    and lot-level, a nomenclature NPN may carry a unit suffix); ``lot_present_in_index`` says whether the
+    ground-truth lot exists among the lots of the index documents the normalizer serves. Edge cases are
+    documented in :func:`cali_address.evaluate.add_lot_columns`.
+    """
+    return add_lot_columns(rows, index_lots(normalizer._predial))
 
 
 def _text_agrees_with_idesc(direccion_normalizada, idesc_dir_ajusta) -> bool | float:
@@ -192,6 +208,15 @@ def _print_headline(summary: pd.DataFrame) -> None:
     print(f"lost_correct (total): {lost}")
 
 
+def ambiguity_kwarg(args) -> dict:
+    """``{"ambiguity_delta": v}`` only when the flag was given, else ``{}``.
+
+    Left out, ``normalize_strict`` picks its own default (0.02, or 0 for an artifact in calibrated mode); an explicit
+    value always wins, so ``--ambiguity-delta 0.02`` forces the historical abstention even in calibrated mode.
+    """
+    return {} if args.ambiguity_delta is None else {"ambiguity_delta": float(args.ambiguity_delta)}
+
+
 def decision_kwargs(args) -> dict:
     """``normalize_strict`` kwargs for the Stage 3 decision options.
 
@@ -202,6 +227,162 @@ def decision_kwargs(args) -> dict:
     max_soft = None if args.max_soft is None else validate_max_soft(args.max_soft)
     gate_fallback = None if args.gate_fallback is None else bool(args.gate_fallback)
     return {"soft_rules": soft_rules, "max_soft": max_soft, "gate_fallback": gate_fallback}
+
+
+def validate_outputs_kwarg(args) -> str | None:
+    """``normalize_strict(validate_outputs=...)``: ``None`` (flag not given) lets ``tuning.json`` decide.
+
+    Kept apart from :func:`decision_kwargs` so that function keeps returning exactly the Stage 3 keys.
+    """
+    return None if args.validate_outputs is None else check_validate_outputs(args.validate_outputs)
+
+
+VALIDATION_COLUMNS = ["rule", "violations", "corrected", "mode", "rows"]
+
+
+def write_validation_summary(summary: dict | None, out_dir: str, tag: str) -> str | None:
+    """Write ``strict_eval_<tag>_validation.csv`` (one line per rule) and return its path.
+
+    ``summary`` is ``ValidationReport.to_dict()``; ``None`` (mode ``off``) writes nothing. A clean run writes the
+    header only, so "no violations" is distinguishable from "validation was not run".
+    """
+    if summary is None:
+        return None
+    rules = sorted(set(summary.get("violations", {})) | set(summary.get("corrected", {})))
+    frame = pd.DataFrame(
+        [{"rule": r, "violations": summary.get("violations", {}).get(r, 0),
+          "corrected": summary.get("corrected", {}).get(r, 0), "mode": summary["mode"], "rows": summary["rows"]}
+         for r in rules],
+        columns=VALIDATION_COLUMNS,
+    )
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, f"strict_eval_{tag}_validation.csv")
+    frame.to_csv(path, index=False)
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Per-source (fuente) breakdown: only when the index carries a ``fuente`` column
+# ---------------------------------------------------------------------------
+FUENTE_BREAKDOWN_COLUMNS = [
+    "scope", "fuente", "n_rows", "n_ok", "manzana_precision", "predial_precision", "predial_lot_precision", "lost_correct",
+]
+#: Label of the rows without a selected document (so without ``fuente``): every non-OK row.
+NO_FUENTE = "(none)"
+
+
+def with_fuente_column(rows: pd.DataFrame, result: pd.DataFrame) -> pd.DataFrame:
+    """``rows`` with the output's ``fuente`` appended as the LAST column; unchanged when ``result`` has none."""
+    if "fuente" not in result.columns:
+        return rows
+    if len(result) != len(rows):
+        raise ValueError(f"fuente has {len(result)} values for {len(rows)} rows")
+    out = rows.copy()
+    out["fuente"] = result["fuente"].to_numpy(dtype=object)
+    return out
+
+
+#: Output columns of the calibrated decision layer, copied into the rows file (after ``fuente``) when present.
+CALIBRATED_ROW_COLUMNS = (
+    "confiabilidad_calibrada", "banda_confiabilidad", "motivos_confiabilidad", "p_predio_cal", "p_manzana_cal",
+)
+
+
+def with_calibrated_columns(rows: pd.DataFrame, result: pd.DataFrame) -> pd.DataFrame:
+    """``rows`` with the calibrated-layer columns of ``result`` appended LAST; unchanged when ``result`` has none."""
+    present = [c for c in CALIBRATED_ROW_COLUMNS if c in result.columns]
+    if not present:
+        return rows
+    if len(result) != len(rows):
+        raise ValueError(f"calibrated columns have {len(result)} values for {len(rows)} rows")
+    out = rows.copy()
+    for column in present:
+        out[column] = result[column].to_numpy(dtype=object if result[column].dtype == object else None)
+    return out
+
+
+def write_band_breakdown(rows: pd.DataFrame, out_dir: str, tag: str) -> str | None:
+    """Write ``strict_eval_<tag>_by_band.csv`` (precision per reliability band x source, Wilson 95 %).
+
+    ``None`` (nothing written) for a run that is not calibrated: no ``banda_confiabilidad`` column, or no banded row.
+    """
+    table = band_breakdown(rows)
+    if table.empty:
+        return None
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, f"strict_eval_{tag}_by_band.csv")
+    table.to_csv(path, index=False)
+    return path
+
+
+def write_calibrated_signals(rows: pd.DataFrame, stats: dict, out_dir: str, tag: str) -> str | None:
+    """Write ``strict_eval_<tag>_calibrated.json``: the drift signals of the run plus the decision counters.
+
+    ``stats`` is the dict ``normalize_strict`` filled; without its ``calibrated`` block (the artifact is not in calibrated
+    mode) nothing is written and ``None`` is returned. Aggregates only: the per-row probabilities of ``stats`` are
+    reduced to quantiles (``p_predio_quantiles`` over every row that reached the decision).
+    """
+    block = (stats or {}).get("calibrated")
+    if not block:
+        return None
+    signals = monitoring_signals(rows, p_predio_reached=block.get("p_predio"))
+    signals["decision_counts"] = {k: v for k, v in block.items() if k != "p_predio"}
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, f"strict_eval_{tag}_calibrated.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(signals, fh, indent=1)
+    return path
+
+
+def _fuente_label(value) -> str:
+    if value is None or value is pd.NA or (isinstance(value, float) and np.isnan(value)):
+        return NO_FUENTE
+    text = str(value).strip()
+    return text or NO_FUENTE
+
+
+def fuente_breakdown(rows: pd.DataFrame) -> pd.DataFrame:
+    """One row per (scope, fuente): sizes and the precisions of the OK rows with ground truth.
+
+    ``scope`` is ``all`` (every row) and ``gold`` (``gt_quality == "gold"``; omitted when the column is absent).
+    Precisions use the same denominators as ``strict_summary`` (OK rows with GT whose code is present); they are
+    NaN without such rows. ``lost_correct`` counts non-OK rows whose raw top-1 manzana was right: those rows have
+    no selected document, so they all sit under ``(none)``. Never raises on an empty or fuente-less frame.
+    """
+    if rows is None or len(rows) == 0 or "fuente" not in rows.columns:
+        return pd.DataFrame(columns=FUENTE_BREAKDOWN_COLUMNS)
+    labels = rows["fuente"].map(_fuente_label)
+    scopes = [("all", np.ones(len(rows), dtype=bool))]
+    if "gt_quality" in rows.columns:
+        scopes.append(("gold", (rows["gt_quality"] == "gold").to_numpy()))
+    out = []
+    for scope, mask in scopes:
+        for fuente in sorted(set(labels[mask])):
+            group = rows[mask & (labels == fuente).to_numpy()]
+            is_ok = (group["estado"] == "OK").to_numpy()
+            scored = is_ok & _bool_or_false(group["has_gt"])
+            lost = 0
+            if "raw_top1_correct_manzana" in group.columns:
+                lost = int(_bool_or_false(group.loc[~is_ok, "raw_top1_correct_manzana"]).sum())
+            out.append({
+                "scope": scope, "fuente": fuente, "n_rows": len(group), "n_ok": int(is_ok.sum()),
+                "manzana_precision": _share(group.loc[scored, "correct_manzana"]),
+                "predial_precision": _share(group.loc[scored, "correct_predial"]),
+                "predial_lot_precision": (_share(group.loc[scored, "correct_predial_lot"])
+                                          if "correct_predial_lot" in group.columns else float("nan")),
+                "lost_correct": lost,
+            })
+    return pd.DataFrame(out, columns=FUENTE_BREAKDOWN_COLUMNS)
+
+
+def write_fuente_breakdown(rows: pd.DataFrame, out_dir: str, tag: str) -> str | None:
+    """Write ``strict_eval_<tag>_by_fuente.csv``; ``None`` (nothing written) without a ``fuente`` column or any value."""
+    if "fuente" not in rows.columns or not (rows["fuente"].map(_fuente_label) != NO_FUENTE).any():
+        return None
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, f"strict_eval_{tag}_by_fuente.csv")
+    fuente_breakdown(rows).to_csv(path, index=False)
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -218,14 +399,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--zone-buffer", type=float, default=300.0)
     ap.add_argument("--min-struct", type=float, default=0.6)
     ap.add_argument("--plate-tolerance", type=int, default=0)
-    ap.add_argument("--ambiguity-delta", type=float, default=DEFAULT_AMBIGUITY_DELTA,
-                    help="ambiguity abstention, mirrors production (default 0.02; 0 disables)")
+    ap.add_argument("--ambiguity-delta", type=float, default=None,
+                    help=f"ambiguity abstention (0 disables). Default: normalize_strict's own ({DEFAULT_AMBIGUITY_DELTA}, "
+                         "mirrors production; 0 for an artifact with decision.json). An explicit value always wins")
     ap.add_argument("--soft-rules", default=None,
                     help="comma-separated rule classes downgraded to soft (default: the artifact's decision block)")
     ap.add_argument("--max-soft", type=int, default=None,
                     help="soft violations an OK row may carry (default: the artifact's decision block, else 1)")
     ap.add_argument("--gate-fallback", type=int, choices=(0, 1), default=None,
                     help="keep text-ranked candidates when the geographic gate empties the list "
+                         "(default: the artifact's decision block, else off)")
+    ap.add_argument("--validate-outputs", choices=("off", "report", "correct"), default=None,
+                    help="last step of normalize_strict: count (report) or conservatively fix (correct) schema violations "
+                         "of the output; per-rule counts go to strict_eval_<tag>_validation.csv "
                          "(default: the artifact's decision block, else off)")
     ap.add_argument("--gold-only", action="store_true",
                     help="keep only rows with gt_quality == 'gold' (needs that column, see build_splits.py)")
@@ -276,10 +462,12 @@ def main(argv: list[str] | None = None) -> int:
 
     raws = df["raw_address"].astype(str).tolist()
     feature_sink: list = []
+    strict_stats: dict = {}
     result = normalize_strict(
         normalizer, raws, feature_sink=feature_sink, min_struct=args.min_struct, plate_tolerance=args.plate_tolerance,
         gazetteer=gazetteer, barrio_buffer_m=args.barrio_buffer, zone_buffer_m=args.zone_buffer,
-        gate_escalate=bool(args.gate_escalate), ambiguity_delta=args.ambiguity_delta,
+        gate_escalate=bool(args.gate_escalate), **ambiguity_kwarg(args),
+        stats=strict_stats, validate_outputs=validate_outputs_kwarg(args),
         **decision_kwargs(args),
     ).reset_index(drop=True)
 
@@ -346,6 +534,9 @@ def main(argv: list[str] | None = None) -> int:
         _text_agrees_with_idesc(d, i)
         for d, i in zip(rows["direccion_normalizada"], rows["idesc_dir_ajusta"])
     ]
+    rows = with_lot_columns(rows, normalizer)     # new columns last: correct_predial_lot, lot_present_in_index
+    rows = with_fuente_column(rows, result)       # only when the index carries ``fuente``
+    rows = with_calibrated_columns(rows, result)  # last of all, only for an artifact in calibrated mode
 
     os.makedirs(out_dir, exist_ok=True)
     rows_path = os.path.join(out_dir, f"strict_eval_{args.tag}_rows.parquet")
@@ -361,6 +552,10 @@ def main(argv: list[str] | None = None) -> int:
     niveles.to_csv(os.path.join(out_dir, f"strict_eval_{args.tag}_niveles.csv"), index=False)
     tiers = position_tier_calibration(rows)
     tiers.to_csv(os.path.join(out_dir, f"strict_eval_{args.tag}_tiers.csv"), index=False)
+    validation_path = write_validation_summary(strict_stats.get("output_validation"), out_dir, args.tag)
+    by_fuente_path = write_fuente_breakdown(rows, out_dir, args.tag)
+    by_band_path = write_band_breakdown(rows, out_dir, args.tag)
+    calibrated_path = write_calibrated_signals(rows, strict_stats, out_dir, args.tag)
 
     with pd.option_context("display.width", 200, "display.max_columns", None):
         print(summary.to_string(index=False))
@@ -373,6 +568,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"wrote {rows_path}", file=sys.stderr)
     print(f"wrote {summary_path}", file=sys.stderr)
     print(f"wrote {motivos_path}", file=sys.stderr)
+    if validation_path:
+        print(f"wrote {validation_path}", file=sys.stderr)
+    if by_fuente_path:
+        print(f"wrote {by_fuente_path}", file=sys.stderr)
+    if by_band_path:
+        print(f"wrote {by_band_path}", file=sys.stderr)
+    if calibrated_path:
+        print(f"wrote {calibrated_path}", file=sys.stderr)
     return 0
 
 

@@ -1,7 +1,4 @@
-"""Download a municipal catastral layer from an ArcGIS FeatureServer you are authorized to use.
-
-The source URL is NOT bundled: set the environment variable ``CALI_CATASTRO_URL`` to the
-layer's ``.../FeatureServer/<n>/query`` endpoint. Check the provider's terms of use first.
+"""Download the full Cali catastral layer (urbano_terreno) from the ArcGIS FeatureServer.
 
 Stores attributes + centroid + polygon geometry (as WKB) in a parquet cache under artifacts/.
 Resumable: each page is cached as its own parquet part; a final merge produces catastro.parquet.
@@ -23,7 +20,10 @@ ARTIFACTS = os.path.join(ROOT, "artifacts")
 PARTS = os.path.join(ARTIFACTS, "catastro_parts")
 OUT = os.path.join(ARTIFACTS, "catastro.parquet")
 
-SOURCE_ENV = "CALI_CATASTRO_URL"
+SERVICE = (
+    "https://services8.arcgis.com/ljfiJpg35HWgdtaC/arcgis/rest/services/"
+    "Revison_Reportes_Ciudadanos_V2_WFL1/FeatureServer/0/query"
+)
 FIELDS = (
     "OBJECTID,numero_predial_nacional,numero_predial_manzana,direccion,"
     "direccion_py,id_predio_sis,area_terreno,MAX_numero_pisos,Shape__Area"
@@ -32,24 +32,9 @@ PAGE = 2000
 MAX_WORKERS = 4
 
 
-def get_service_url() -> str:
-    """Return the configured layer URL or exit with a clear message (no default on purpose)."""
-    url = os.environ.get(SOURCE_ENV, "").strip()
-    if not url:
-        sys.exit(
-            f"ERROR: environment variable {SOURCE_ENV} is not set. Provide the query URL of a "
-            "catastral layer you are authorized to use (https://.../FeatureServer/<n>/query). "
-            "No default source is bundled. / Defina la variable de entorno "
-            f"{SOURCE_ENV} con una fuente que usted este autorizado a consultar."
-        )
-    if not url.lower().startswith("https://"):
-        sys.exit(f"ERROR: {SOURCE_ENV} must be an https:// URL.")
-    return url
-
-
-def count_records(service: str) -> int:
+def count_records() -> int:
     r = requests.get(
-        service,
+        SERVICE,
         params={"where": "1=1", "returnCountOnly": "true", "f": "json"},
         timeout=120,
     )
@@ -111,7 +96,7 @@ def rings_to_wkb(rings) -> bytes | None:
     return geom.wkb
 
 
-def fetch_page(offset: int, session: requests.Session, service: str) -> str:
+def fetch_page(offset: int, session: requests.Session) -> str:
     part = os.path.join(PARTS, f"part_{offset:07d}.parquet")
     if os.path.exists(part) and os.path.getsize(part) > 0:
         return part
@@ -130,7 +115,7 @@ def fetch_page(offset: int, session: requests.Session, service: str) -> str:
     last_err = None
     for attempt in range(6):
         try:
-            r = session.get(service, params=params, timeout=180)
+            r = session.get(SERVICE, params=params, timeout=180)
             r.raise_for_status()
             data = r.json()
             if "error" in data:
@@ -162,16 +147,15 @@ def fetch_page(offset: int, session: requests.Session, service: str) -> str:
 
 
 def main() -> None:
-    service = get_service_url()
     os.makedirs(PARTS, exist_ok=True)
-    total = count_records(service)
+    total = count_records()
     print(f"total records = {total}", flush=True)
     offsets = list(range(0, total + PAGE, PAGE))
     session = requests.Session()
     session.headers["User-Agent"] = "cali-address-normalizer/1.0"
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        futs = {ex.submit(fetch_page, o, session, service): o for o in offsets}
+        futs = {ex.submit(fetch_page, o, session): o for o in offsets}
         done = 0
         for fut in as_completed(futs):
             fut.result()
@@ -187,7 +171,7 @@ def main() -> None:
     df.to_parquet(OUT, index=False)
     print(f"WROTE {OUT} rows={len(df)} cols={list(df.columns)}", flush=True)
     meta = {
-        "source": "municipal catastral layer (ArcGIS FeatureServer, URL supplied via CALI_CATASTRO_URL)",
+        "source": SERVICE,
         "total_reported": total,
         "rows_downloaded": int(len(df)),
         "downloaded_at": time.strftime("%Y-%m-%d %H:%M:%S"),

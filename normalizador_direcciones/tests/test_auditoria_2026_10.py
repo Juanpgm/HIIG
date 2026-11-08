@@ -2,8 +2,9 @@
 
 Each section reproduces the input the audit demonstrated and pins the corrected
 behaviour, plus the boundary / empty / malformed cases around it. Audit numbers
-(measured on real data) are summarised in the CHANGELOG (the audit report itself is not part
-of this repository); the tests here only use synthetic addresses.
+(real data) live in ``../../docs/auditorias/AUDITORIA_NORMALIZADOR.md`` (relative to this
+package, ``models/normalizador_direcciones``) and in the CHANGELOG; the tests here only use
+synthetic addresses.
 """
 
 from __future__ import annotations
@@ -507,6 +508,8 @@ def test_load_own_centroids_on_empty_docs(tmp_path):
 # ---------------------------------------------------------------------------
 # 8. Results must not depend on the batch size (bf16 autocast / fp16 products)
 # ---------------------------------------------------------------------------
+import os  # noqa: E402
+import shutil  # noqa: E402
 
 import torch  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
@@ -593,7 +596,7 @@ def test_scoring_is_deterministic(tiny_normalizer):
 
 @pytest.mark.requires_artifacts
 def test_real_artifacts_status_and_scores_are_batch_size_independent():
-    """The audit saw status flips between one batch and batches of 64 on GPU."""
+    """The audit saw 4 status flips in 5,725 rows between one batch and batches of 64 on GPU."""
     from cali_address.service import normalize_strict
     norm = AddressNormalizer(DEFAULT_ARTIFACTS_DIR)
     sample = [f"CL {1 + i % 60} # {2 + i % 50} - {10 + (i * 7) % 90}" for i in range(160)]

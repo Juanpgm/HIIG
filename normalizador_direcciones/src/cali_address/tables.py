@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import os
 import re
 import tempfile
@@ -233,7 +234,7 @@ def guess_header_row(raw_df_no_header: pd.DataFrame, max_scan_rows: int = 15) ->
     """Index of the row that most likely holds the column names.
 
     The heuristic is the one this project already applied by hand to the ArcGIS
-    Excel exports (inspecciones / source_d / acciones prefix the real header with
+    Excel exports (inspecciones / stickers / acciones prefix the real header with
     2-5 metadata rows): take the row with the most non-null cells, and break ties
     toward the row whose values look most like short labels rather than data.
     Counting non-nulls is what separates the header from the data in these files,

@@ -4,10 +4,10 @@ Why: the GPS-derived ground truth is noisy (neighbouring parcels are ~6 m
 apart), and ``artifacts/eval_scored_full.parquet`` was already used to tune
 rules and reliability, so it is a DEV set. This script produces
 
-* ``frozen_test.parquet``      ``source_a``-only rows with GT, never used for tuning
+* ``frozen_test.parquet``      Fasecolda-only rows with GT, never used for tuning
 * ``dev.parquet``              the existing eval rows + ``gt_quality``
 * ``train_pairs.parquet``      real (raw_address -> doc_id) pairs, GOLD rows only
-* ``unlabeled_addresses.parquet``  address strings only (``source_b``, ``source_e``)
+* ``unlabeled_addresses.parquet``  address strings only (RUD, acciones)
 * ``splits_report.json``       counts, overlap matrix, gold ratios
 
 and exits non-zero if any normalized address key is shared between
@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 from cali_address.labels import address_key, label_quality  # noqa: E402
 
 DEFAULT_OUT_DIR = os.path.join(ROOT, "artifacts", "splits")
-CONTEXT_DIR = os.environ.get("CALI_EVAL_CONTEXT_DIR") or os.path.join(ROOT, "context")
+CONTEXT_DIR = os.path.join(ROOT, "context")
 ARTIFACTS = os.path.join(ROOT, "artifacts")
 
 TRAIN_COLUMNS = [
@@ -45,16 +45,11 @@ TRAIN_COLUMNS = [
 UNLABELED_COLUMNS = ["raw_address", "dataset"]
 SPLIT_NAMES = ("train_pairs", "dev", "frozen_test")
 
-#: Optional later exports of the same source (near-supersets of the main files, so
-#: duplicates are removed by address key). Set ``CALI_EVAL_SOURCE_C_EXTRA_FILE`` /
-#: ``CALI_EVAL_SOURCE_D_EXTRA_FILE`` to enable them; by default no extra file is read.
+#: Later exports of the same source; they are near-supersets of the 09-23 files,
+#: so duplicates are removed by address key.
 EXTRA_FILES = {
-    key: os.environ[var]
-    for key, var in (
-        ("source_c", "CALI_EVAL_SOURCE_C_EXTRA_FILE"),
-        ("source_d", "CALI_EVAL_SOURCE_D_EXTRA_FILE"),
-    )
-    if os.environ.get(var)
+    "inspecciones": "inspecciones_2026-09-24_18-51.xlsx",
+    "stickers": "stickers_2026-09-24_18-56.xlsx",
 }
 
 
@@ -79,12 +74,12 @@ def _drop_conflicting_keys(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def select_frozen(pool: pd.DataFrame, dev_keys: set, size: int, seed: int = 42) -> pd.DataFrame:
-    """Sample the frozen test set: ``source_a`` only, with GT, unique keys, not in dev.
+    """Sample the frozen test set: Fasecolda only, with GT, unique keys, not in dev.
 
     Keys with conflicting GT are dropped; noisy rows are kept (flagged by
     ``gt_quality``). ``size`` larger than the pool returns the whole pool.
     """
-    df = pool[(pool["dataset"] == "source_a") & pool["has_gt"].astype(bool)]
+    df = pool[(pool["dataset"] == "fasecolda") & pool["has_gt"].astype(bool)]
     df = df[~df["address_key"].isin(dev_keys)]
     df = _drop_conflicting_keys(df)
     df = df.drop_duplicates("address_key", keep="first")
@@ -202,7 +197,7 @@ def _load_all(catastro, docs, parcels):
             df["source_file"] = tag
             frames.append(df)
         df = add_keys(pd.concat(frames, ignore_index=True))
-        if spec.key in ("source_b", "source_e"):
+        if spec.key in ("rud", "acciones"):
             # Address strings only: nothing else from these workbooks is carried forward.
             unlabeled.append(df[["raw_address", "dataset", "address_key"]])
             continue
@@ -233,13 +228,13 @@ def main(argv: list[str] | None = None) -> int:
 
     labeled, unlabeled_all = _load_all(catastro, docs, parcels)
 
-    frozen = select_frozen(labeled["source_a"], dev_keys, args.frozen_size, args.seed)
-    frozen["idesc_dir_ajusta"] = None  # no third-party geocoder answer for the frozen set
+    frozen = select_frozen(labeled["fasecolda"], dev_keys, args.frozen_size, args.seed)
+    frozen["idesc_dir_ajusta"] = None
     frozen_keys = set(frozen["address_key"])
 
     exclude = dev_keys | frozen_keys
     train = build_train_pairs(
-        pd.concat([labeled[k] for k in ("source_a", "source_c", "source_d")], ignore_index=True),
+        pd.concat([labeled[k] for k in ("fasecolda", "inspecciones", "stickers")], ignore_index=True),
         exclude,
     )
     unlabeled = build_unlabeled(unlabeled_all, exclude)

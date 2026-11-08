@@ -18,7 +18,7 @@ bs = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(bs)
 
 
-def _labeled(addrs, dataset="source_a", quality="gold", start=0):
+def _labeled(addrs, dataset="fasecolda", quality="gold", start=0):
     n = len(addrs)
     return pd.DataFrame({
         "raw_address": addrs,
@@ -86,10 +86,10 @@ class TestSelectFrozen:
         df = _labeled(_addrs(10), quality="noisy")
         assert len(bs.select_frozen(bs.add_keys(df), set(), 100, seed=1)) == 10
 
-    def test_source_a_only(self):
-        df = pd.concat([_labeled(_addrs(5)), _labeled(_addrs(5, 500), dataset="source_d")])
+    def test_fasecolda_only(self):
+        df = pd.concat([_labeled(_addrs(5)), _labeled(_addrs(5, 500), dataset="stickers")])
         out = bs.select_frozen(bs.add_keys(df), set(), 100, seed=1)
-        assert set(out["dataset"]) == {"source_a"}
+        assert set(out["dataset"]) == {"fasecolda"}
 
 
 class TestBuildTrainPairs:
@@ -106,21 +106,21 @@ class TestBuildTrainPairs:
         assert len(out) == 6 and not (set(out["address_key"]) & ex)
 
     def test_dedup_across_dates_keeps_first(self):
-        a = _labeled(["KR 26 # 73 - 10"], dataset="source_c", start=0)
-        b = _labeled(["kr 26 #73-10"], dataset="source_c", start=5)
+        a = _labeled(["KR 26 # 73 - 10"], dataset="inspecciones", start=0)
+        b = _labeled(["kr 26 #73-10"], dataset="inspecciones", start=5)
         out = bs.build_train_pairs(bs.add_keys(pd.concat([a, b], ignore_index=True)), set())
         assert len(out) == 1
 
     def test_conflicting_gt_for_same_key_dropped(self):
-        a = _labeled(["KR 26 # 73 - 10"], dataset="source_d")
-        b = _labeled(["KR 26 # 73 - 10"], dataset="source_d", start=5)
+        a = _labeled(["KR 26 # 73 - 10"], dataset="stickers")
+        b = _labeled(["KR 26 # 73 - 10"], dataset="stickers", start=5)
         b["gt_doc_id"] = 99.0
         out = bs.build_train_pairs(bs.add_keys(pd.concat([a, b], ignore_index=True)), set())
         assert len(out) == 0
 
     def test_source_row_id_and_types(self):
         out = bs.build_train_pairs(bs.add_keys(_labeled(["KR 26 # 73 - 10"], start=7)), set())
-        assert out["source_row_id"].iloc[0] == "source_a:7"
+        assert out["source_row_id"].iloc[0] == "fasecolda:7"
         assert out["gt_doc_id"].dtype.kind == "i"
 
     def test_empty_and_missing_gt_columns(self):
@@ -135,14 +135,14 @@ class TestBuildTrainPairs:
 
 class TestBuildUnlabeled:
     def test_exactly_two_columns_no_personal_data(self):
-        source_b = pd.DataFrame({"raw_address": ["KR 1 # 2 - 3", "KR 1 # 2 - 3 ", "CL 4 # 5 - 6"],
-                            "dataset": "source_b", "nombre": ["x", "y", "z"], "cedula": [1, 2, 3]})
-        out = bs.build_unlabeled(bs.add_keys(source_b), set())
+        rud = pd.DataFrame({"raw_address": ["KR 1 # 2 - 3", "KR 1 # 2 - 3 ", "CL 4 # 5 - 6"],
+                            "dataset": "rud", "nombre": ["x", "y", "z"], "cedula": [1, 2, 3]})
+        out = bs.build_unlabeled(bs.add_keys(rud), set())
         assert list(out.columns) == ["raw_address", "dataset"]
         assert len(out) == 2
 
     def test_excludes_dev_frozen_keys(self):
-        df = pd.DataFrame({"raw_address": ["KR 1 # 2 - 3", "CL 4 # 5 - 6"], "dataset": "source_e"})
+        df = pd.DataFrame({"raw_address": ["KR 1 # 2 - 3", "CL 4 # 5 - 6"], "dataset": "acciones"})
         ex = {address_key("KR 1 # 2 - 3")}
         assert bs.build_unlabeled(bs.add_keys(df), ex)["raw_address"].tolist() == ["CL 4 # 5 - 6"]
 
@@ -183,13 +183,13 @@ class TestReport:
         frozen = bs.add_keys(_labeled(_addrs(4), quality="gold"))
         dev = bs.add_keys(_labeled(_addrs(2, 100), quality="noisy"))
         train = bs.add_keys(_labeled(_addrs(3, 200)))
-        unl = pd.DataFrame({"raw_address": ["x"], "dataset": ["source_b"]})
-        universe = {"source_a": _labeled(_addrs(10), quality="gold")}
+        unl = pd.DataFrame({"raw_address": ["x"], "dataset": ["rud"]})
+        universe = {"fasecolda": _labeled(_addrs(10), quality="gold")}
         rep = bs.build_report(frozen, dev, train, unl, universe, seed=42)
         json.dumps(rep)
         assert rep["counts"]["frozen_test"]["total"] == 4
         assert rep["counts"]["dev"]["by_gt_quality"] == {"noisy": 2}
-        assert rep["gold_ratio_by_dataset"]["source_a"] == 1.0
+        assert rep["gold_ratio_by_dataset"]["fasecolda"] == 1.0
         assert set(rep["overlap"]) == {"train_pairs", "dev", "frozen_test"}
 
 

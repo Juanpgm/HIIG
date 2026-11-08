@@ -18,6 +18,7 @@ import os
 import socket
 import sys
 import threading
+import time
 import webbrowser
 from typing import Callable
 
@@ -27,7 +28,9 @@ from .paths import ArtifactsMissingError
 from .io import (
     ColumnMapping,
     DatasetError,
+    DatasetIOError,
     MemorySink,
+    MissingDependencyError,
     UsageError,
     describe_reader_formats,
     describe_writer_formats,

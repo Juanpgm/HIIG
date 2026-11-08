@@ -7,6 +7,8 @@ import importlib.util
 import json
 import os
 
+import numpy as np
+import pandas as pd
 import pytest
 import torch
 
@@ -160,7 +162,7 @@ def _summary(n_ok, n, man, pred, lost):
          "predial_precision": str(pred), "lost_correct": "0"},
         {"dataset": "ALL", "estado": "SIN_MATCH", "n": str(n - n_ok), "manzana_precision": "",
          "predial_precision": "", "lost_correct": str(lost)},
-        {"dataset": "source_a", "estado": "OK", "n": "999", "manzana_precision": "0.1",
+        {"dataset": "fasecolda", "estado": "OK", "n": "999", "manzana_precision": "0.1",
          "predial_precision": "0.1", "lost_correct": "77"},          # per-dataset rows must not be double counted
     ]
 

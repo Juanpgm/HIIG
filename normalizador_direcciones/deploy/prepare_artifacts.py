@@ -61,7 +61,7 @@ def warm_interpolation_cache(target_dir: str) -> bool:
     """Pre-build ``interp_index_v1.pkl`` (+ sidecar) next to the artifacts so the first request is not slow.
 
     The image copies ``deploy/artifacts/`` as is: with the cache inside, a read-only container still gets it.
-    Without it the service builds the index lazily (slow when cold) and only warns if it cannot write it.
+    Without it the service builds the index lazily (about 23 s cold) and only warns if it cannot write it.
     """
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
     from cali_address.catalog import warm_cache as warm_catalog

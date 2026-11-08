@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-from tiny import tiny_config, tiny_data_dir, write_pairs
+from tiny import tiny_config, tiny_data_dir, tiny_docs, write_pairs
 
 from cali_address.dataset import build_plate_negatives
 from cali_address.realpairs import RealPairs, load_real_pairs

@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # PRIVACY: real citizen data. These must NEVER be committed.
-#   context/  insured-property registry (source A), disaster-victim registry
-#             (source B: names and ID numbers), field inspection reports
+#   context/  insured-property registry (Fasecolda), disaster-victim registry
+#             (RUD: names and ID numbers), field inspection reports
 #   outputs/  normalization results derived from the above
 # A commit that adds either one leaks personal data irreversibly, because git
 # history keeps it even after a later delete.
@@ -26,16 +26,24 @@ artifacts/*
 !artifacts/model.pt
 !artifacts/tuning.json
 !artifacts/reliability.json
-!artifacts/reliability_v2.json
-!artifacts/catastro_meta.json
+!artifacts/train_report.json
+!artifacts/gazetteer.pkl
 # catastro_docs.parquet: public cadastre (addresses, parcel ids, centroids), 21 MB.
 !artifacts/catastro_docs.parquet
 # catastro_own_centroids.parquet: the same public cadastre (NPN + parcel centroid), built by
 # scripts/build_own_centroids.py and shipped in the image.
 !artifacts/catastro_own_centroids.parquet
 
-# Experiments, row-level evaluations and any run output are never tracked.
-artifacts/experiments/
+# Experiments: only the leaderboard and each run's small config files.
+# Never an experiment's model.pt, embeddings or row dumps.
+!artifacts/experiments/
+artifacts/experiments/*
+!artifacts/experiments/leaderboard.csv
+!artifacts/experiments/*/
+artifacts/experiments/*/*
+!artifacts/experiments/*/experiment.json
+!artifacts/experiments/*/tuning.json
+!artifacts/experiments/*/reliability.json
 
 deploy/artifacts/
 
@@ -43,12 +51,6 @@ deploy/artifacts/
 # addresses, tensors and embeddings are large and regenerable.
 artifacts/splits/
 strict_eval_*
-eval_*.csv
-eval_*.parquet
-*leaderboard*
-idesc_*
-*predictions*
-train_data*
 *eval_rows*
 *.npz
 *.npy
@@ -87,22 +89,5 @@ Thumbs.db
 # Notebooks are never committed (large, may embed private outputs).
 *.ipynb
 
-# Lazily built caches: regenerated on first use (see deploy/prepare_artifacts.py), never commit.
-*.pkl
-*.joblib
-interp_index_v1.*
-catalog_keys_v1.*
-
-# Private inputs, run results and scratch.
-runs/
-candidatos/
-salida_jev*/
-notebooks/
-scratch/
-backup/
-*.log
-.coverage.*
-.env*
-!.env.example
-*.pem
-*.key
+# Certified-nomenclature GIS extracts used for training (hundreds of MB, public data kept locally, never versioned)
+train_data/nomenclatura_certificada_*/

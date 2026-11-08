@@ -109,7 +109,7 @@ def test_jsonl_and_json(tmp_path):
 
 def test_json_zero_rows_is_empty_array(tmp_path):
     p = tmp_path / "o.json"
-    with open_sink(str(p)):
+    with open_sink(str(p)) as sink:
         pass
     assert json.loads(p.read_text(encoding="utf-8")) == []
 

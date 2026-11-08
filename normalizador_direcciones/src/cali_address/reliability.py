@@ -35,8 +35,9 @@ import math
 from dataclasses import dataclass
 
 __all__ = [
-    "BANDS", "FEATURE_NAMES", "HYBRID_CLIP", "KINDS", "RELIABILITY_FILENAME", "CellReliability",
-    "HybridReliability", "Reliability", "interpolate_knots", "load_reliability", "reliability_cell",
+    "BANDS", "FEATURE_NAMES", "HYBRID_CLIP", "KINDS", "OPTIONAL_FEATURE_NAMES", "PCER_FUENTE",
+    "RELIABILITY_FILENAME", "SOURCE_FEATURE", "CellReliability", "HybridReliability", "Reliability",
+    "interpolate_knots", "load_reliability", "reliability_cell", "source_feature_value",
 ]
 
 RELIABILITY_FILENAME = "reliability.json"
@@ -47,6 +48,20 @@ FEATURE_NAMES = (
     "nivel_esquina", "nivel_via", "nivel_manzana", "nivel_direccion", "gate_applied",
     "margen_manzana", "margen_predio", "n_competidores",
 )
+
+#: Opt-in features, OFF by default: ``FEATURE_NAMES`` (the captured set, ``feat_*`` columns, every shipped artifact)
+#: never changes. A logistic artifact fitted with ``fit_reliability.py --source-feature`` lists ``src_pcer`` in its
+#: ``feature_names`` (and carries ``"source_feature": true``); only then does serving compute it.
+SOURCE_FEATURE = "src_pcer"
+OPTIONAL_FEATURE_NAMES = (SOURCE_FEATURE,)
+#: ``fuente`` of the cadastral document that makes ``src_pcer`` 1.0.
+PCER_FUENTE = "nomenclatura_pcer"
+
+
+def source_feature_value(fuente) -> float:
+    """``src_pcer``: 1.0 when ``fuente`` is exactly ``nomenclatura_pcer``, else 0.0 (missing, NaN, other values)."""
+    return 1.0 if isinstance(fuente, str) and fuente == PCER_FUENTE else 0.0
+
 
 #: Standardized features are clipped to +-CLIP sigmas so an outlier cannot blow up the logit.
 CLIP = 5.0
@@ -308,8 +323,10 @@ def load_reliability(path: str) -> Reliability | CellReliability | HybridReliabi
         # before the margin features existed) keeps loading: the server only reads
         # the names it lists. Unknown or duplicated names are rejected.
         names = list(data["feature_names"])
-        if not names or len(set(names)) != len(names) or not set(names) <= set(FEATURE_NAMES):
+        if not names or len(set(names)) != len(names) or not set(names) <= set(FEATURE_NAMES) | set(OPTIONAL_FEATURE_NAMES):
             raise ValueError("feature names differ from the serving contract")
+        if data.get("source_feature") is True and SOURCE_FEATURE not in names:
+            raise ValueError("source_feature flag without the feature")
         n = len(names)
         pred, manz = data["predio"], data["manzana"]
         intercepts = [float(pred["intercept"]), float(manz["intercept"])]
