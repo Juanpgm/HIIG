@@ -45,7 +45,7 @@ def _scores(columns) -> dict:
 
 
 def test_detect_exact_accented_name_wins_over_derived_twin():
-    """The source A export has DIRECCIÓN and DIRECCIÓN_NORMALIZADA; the input wins."""
+    """The Fasecolda export has DIRECCIÓN and DIRECCIÓN_NORMALIZADA; the input wins."""
     columns = ["CONSECUTIVO", "MUNICIPIO", "DIRECCIÓN", "DIRECCIÓN_NORMALIZADA"]
     best, ranked = detect_address_column(columns)
     assert best == "DIRECCIÓN"
@@ -109,7 +109,7 @@ def test_detect_on_zero_columns():
 # ---------------------------------------------------------------------------
 # guess_header_row
 # ---------------------------------------------------------------------------
-def test_guess_header_skips_metadata_rows_like_a_survey_export():
+def test_guess_header_skips_metadata_rows_like_the_stickers_export():
     """4 metadata rows, 1 blank row, then 31 named columns."""
     raw = pd.DataFrame(
         [
@@ -725,7 +725,7 @@ def test_rule_violations_abbreviated_north_letter_on_both_sides_is_clean():
 
 
 def test_rule_violations_abbreviated_west_letter_o_on_both_sides_is_clean():
-    assert _violations("AV 987 O 654 O 321", "AV 987 OESTE # 654 OESTE - 321") == []
+    assert _violations("AV 12 O 6 O 153", "AV 12 OESTE # 6 OESTE - 153") == []
 
 
 def test_rule_violations_abbreviated_north_letter_on_cross_only_is_clean():

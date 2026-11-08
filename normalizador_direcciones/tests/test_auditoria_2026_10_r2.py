@@ -4,15 +4,17 @@ Round 2 closes what the independent review of round 1 found: the ambiguity
 competition must still see candidates that only fail the one-sided suffix rule,
 the suffix rejection is auditable from ``motivo``, and a set of rule branches
 that no test pinned. Synthetic addresses only (see ``test_auditoria_2026_10.py``
-and the CHANGELOG for the audit itself).
+and ``../../docs/auditorias/AUDITORIA_NORMALIZADOR.md`` for the audit itself).
 """
 
 from __future__ import annotations
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from cali_address.parser import parse_address
-from cali_address.service import normalize_strict
+from cali_address.service import _classify_violations, normalize_strict
 
 
 def _ambiguity_run(stub_normalizer, query, best, rival, scores=(0.90, 0.895), delta=0.02, **kw):

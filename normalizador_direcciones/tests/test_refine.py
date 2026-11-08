@@ -6,6 +6,7 @@ Only synthetic addresses are used here.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import os
 import random
 import re
@@ -324,10 +325,7 @@ def test_default_off_batch_and_strict_unchanged_on_real_artifacts():
     from cali_address.paths import DEFAULT_ARTIFACTS_DIR
     import pandas as pd
 
-    samples_path = os.path.join(DEFAULT_ARTIFACTS_DIR, "eval_samples.parquet")
-    if not os.path.exists(samples_path):  # private evaluation rows (real addresses): never published
-        pytest.skip("needs the private eval_samples.parquet")
-    samples = pd.read_parquet(samples_path)
+    samples = pd.read_parquet(os.path.join(DEFAULT_ARTIFACTS_DIR, "eval_samples.parquet"))
     raws = samples["raw_address"].astype(str).tolist()[:150]
     norm = AddressNormalizer(DEFAULT_ARTIFACTS_DIR)
     a = norm.normalize_batch(raws, use_model=False)

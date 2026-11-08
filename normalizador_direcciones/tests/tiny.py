@@ -63,7 +63,7 @@ def write_pairs(path: str, docs: pd.DataFrame, n: int = 12) -> str:
         rows.append({
             "raw_address": docs["direccion"][d].replace("#", "No.").lower(),
             "address_key": f"K{i}",
-            "dataset": "source_a",
+            "dataset": "fasecolda",
             "gt_doc_id": d,
             "gt_manzana": None,
             "gt_predial": docs["numero_predial_nacional"][d],
